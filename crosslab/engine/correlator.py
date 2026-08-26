@@ -1,70 +1,65 @@
 """
 Multi-Machine Correlation Engine for CrossLab.
-Correlates logs, telemetry, and packet states between Host and Client machines.
+Discovers empirical facts across distributed timelines and delegates to pluggable analyzers.
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from crosslab.engine.analyzers import (
+    BaseAnalyzer,
+    Fear3CoopAnalyzer,
+    PacketSequenceAnalyzer,
+    RequestResponseAnalyzer,
+    TemporalAnalyzer,
+)
 from crosslab.protocol.actions import RunOutcome
 from crosslab.protocol.models import CorrelationResult, Discrepancy, RunRecord
 
 
 class CorrelationEngine:
     """
-    Analyzes multi-machine investigation logs, aligns timestamps,
-    detects sequence discrepancies, and evaluates empirical hypotheses.
+    Coordinates distributed investigation correlation by executing registered analyzers
+    and building temporal fact timelines.
     """
 
-    @staticmethod
-    def correlate_run(run: RunRecord) -> CorrelationResult:
+    def __init__(self, analyzers: Optional[List[BaseAnalyzer]] = None):
+        self.analyzers: List[BaseAnalyzer] = analyzers or [
+            TemporalAnalyzer(),
+            PacketSequenceAnalyzer(),
+            RequestResponseAnalyzer(),
+            Fear3CoopAnalyzer(),
+        ]
+
+    def register_analyzer(self, analyzer: BaseAnalyzer) -> None:
+        self.analyzers.append(analyzer)
+
+    def correlate_run(self, run: RunRecord) -> CorrelationResult:
         discrepancies: List[Discrepancy] = []
-        timeline: List[Dict[str, Any]] = []
+        temporal_insights: List[str] = []
 
-        host_data = run.host or {}
-        client_data = run.client or {}
-
-        # 1. Correlate Packet Counters
-        last_sent = client_data.get("last_sent_packet")
-        last_recv = host_data.get("last_received_packet")
-
-        if last_sent is not None and last_recv is not None:
-            if last_sent > last_recv:
-                dropped = last_sent - last_recv
+        # 1. Execute all pluggable analyzers
+        for analyzer in self.analyzers:
+            try:
+                disc = analyzer.analyze(run)
+                discrepancies.extend(disc)
+                insights = analyzer.get_temporal_insights(run)
+                temporal_insights.extend(insights)
+            except Exception as e:
                 discrepancies.append(
                     Discrepancy(
-                        code="PACKET_RECEIPT_LAG_OR_DROP",
-                        description=(
-                            f"Client sent packet #{last_sent} (reported transport success), "
-                            f"but Host only received up to packet #{last_recv} ({dropped} packets in flight or dropped)."
-                        ),
-                        host_evidence={"last_received_packet": last_recv},
-                        client_evidence={"last_sent_packet": last_sent, "transport_result": client_data.get("transport_result")},
-                        impact="Host receive buffer starved, causing receive timeout timer to count up.",
+                        code="ANALYZER_EXECUTION_ERROR",
+                        analyzer=analyzer.name,
+                        description=f"Analyzer {analyzer.name} encountered error: {str(e)}",
+                        impact="Partial analysis only",
                     )
                 )
 
-        # 2. Correlate Disconnect Reasons & UI States
-        host_reason = host_data.get("reason") or host_data.get("disconnect_reason")
-        client_ui_reason = client_data.get("displayed_reason") or client_data.get("ui_reason")
+        # 2. Interleave and build timeline from host and client logs
+        all_logs: List[Dict[str, Any]] = list(run.logs or [])
+        host_data = run.host or {}
+        client_data = run.client or {}
 
-        if host_reason == "connection_lost" and client_ui_reason == "kicked_by_host":
-            discrepancies.append(
-                Discrepancy(
-                    code="ASYMMETRIC_DISCONNECT_REASON",
-                    description=(
-                        "Host terminated session due to internal 'connection_lost' (timeout timer reached 5000ms), "
-                        "which the Client game UI displayed as 'Kicked by the host / connection lost'."
-                    ),
-                    host_evidence={"internal_reason": host_reason, "disconnect_time": host_data.get("disconnect_time")},
-                    client_evidence={"ui_displayed_reason": client_ui_reason, "transport_result": client_data.get("transport_result")},
-                    impact="The UI error message 'Kicked by the host' is misleading; the host did not kick the client intentionally, but suffered a silent receive timeout.",
-                )
-            )
-
-        # 3. Interleave and build timeline from host and client logs
-        all_logs = list(run.logs or [])
-        # Extract timestamped events from host and client telemetry
         if "events" in host_data and isinstance(host_data["events"], list):
             for ev in host_data["events"]:
                 ev_copy = dict(ev)
@@ -78,33 +73,40 @@ class CorrelationEngine:
                 all_logs.append(ev_copy)
 
         def sort_key(entry: Dict[str, Any]) -> str:
-            return str(entry.get("timestamp") or entry.get("time") or "")
+            # Monotonic first if available, otherwise wall time / string
+            mono = entry.get("monotonic_ns")
+            if mono is not None:
+                return f"mono_{mono:020d}"
+            return str(entry.get("timestamp") or entry.get("time") or entry.get("wall_time") or "")
 
         timeline = sorted(all_logs, key=sort_key)
 
-        # 4. Generate Summary and Verdict
+        # 3. Determine if failure reproduced
+        host_reason = host_data.get("reason") or host_data.get("disconnect_reason")
         reproduced = (
             run.outcome == RunOutcome.REPRODUCED
             or (host_reason is not None and "disconnect" in str(host_reason).lower())
             or (host_reason == "connection_lost")
+            or any(d.code == "PACKET_SEQUENCE_GAP" for d in discrepancies)
         )
 
+        # 4. Generate Verdict and Next Steps based on empirical facts
         hypothesis_verdict = None
-        suggested_next_steps = []
+        suggested_next_steps: List[str] = []
 
         if discrepancies:
-            hypothesis_verdict = "SUPPORTED: Empirical evidence confirms host receive timeout occurs despite active client transmission."
-            suggested_next_steps.append("Instrument Steam P2P keep-alive heartbeat callback on both host and client.")
-            suggested_next_steps.append("Check if client is sending keep-alive on a socket channel the host stopped polling.")
-            suggested_next_steps.append("Propose patch to keep receive timer refreshed or clamp watchdog threshold.")
+            disc_codes = [d.code for d in discrepancies]
+            hypothesis_verdict = f"SUPPORTED: {len(discrepancies)} empirical discrepancies identified ({', '.join(disc_codes)})."
+            suggested_next_steps.append("Examine transport vs application layer socket queue synchronization.")
+            suggested_next_steps.append("Validate keep-alive heartbeat probe frequency during high send/recv load.")
+            suggested_next_steps.append("Formulate and test defensive watchdog heartbeat patch.")
         else:
-            hypothesis_verdict = "INCONCLUSIVE: No significant discrepancy detected between host and client metrics."
-            suggested_next_steps.append("Increase instrumentation sampling rate (e.g. 50ms) for subsequent run.")
+            hypothesis_verdict = "INCONCLUSIVE: No significant discrepancy detected between distributed node observations."
+            suggested_next_steps.append("Increase instrumentation trace frequency on both nodes for the next run.")
 
         summary = (
-            f"Run {run.run_id} Analysis ({len(discrepancies)} discrepancies detected): "
-            f"Host reason='{host_reason}', Client UI='{client_ui_reason}'. "
-            f"Packets sent={last_sent}, received={last_recv}."
+            f"Run {run.run_id} Analysis ({len(discrepancies)} discrepancies detected via {len(self.analyzers)} analyzers). "
+            f"Reproduced: {reproduced}."
         )
 
         return CorrelationResult(
@@ -114,6 +116,7 @@ class CorrelationEngine:
             reproduced=reproduced,
             discrepancies=discrepancies,
             timeline=timeline,
+            temporal_insights=temporal_insights,
             hypothesis_verdict=hypothesis_verdict,
             suggested_next_steps=suggested_next_steps,
         )

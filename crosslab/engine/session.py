@@ -1,6 +1,6 @@
 """
 Investigation Session Manager for CrossLab.
-Coordinates hypotheses, experiments, runs, observations, and answers investigation queries.
+Coordinates hypotheses with explicit evidence graphs, experiments, runs, and distributed queries.
 """
 
 from typing import Any, Dict, List, Optional
@@ -8,14 +8,18 @@ from typing import Any, Dict, List, Optional
 from crosslab.engine.correlator import CorrelationEngine
 from crosslab.engine.storage import Storage
 from crosslab.protocol.actions import (
+    EvidenceRelation,
+    EvidenceType,
     ExperimentStatus,
     HypothesisStatus,
     RunOutcome,
 )
 from crosslab.protocol.models import (
+    AgentAssessment,
     AgentPeer,
     ArtifactPayload,
     CorrelationResult,
+    EvidenceItem,
     Experiment,
     Hypothesis,
     InstrumentationRequest,
@@ -48,25 +52,94 @@ class InvestigationSession:
     def get_messages(self, limit: int = 100) -> List[MessageEnvelope]:
         return self.storage.get_messages(session_id=self.session_id, limit=limit)
 
-    # --- Hypotheses Management ---
+    # --- Hypotheses & Evidence Graph ---
 
     def propose_hypothesis(
         self,
         title: str,
         description: str,
         creator: str,
-        confidence: float = 0.5,
+        parent_hypothesis_id: Optional[str] = None,
+        confidence: Optional[float] = None,
     ) -> Hypothesis:
         hyp = Hypothesis(
             session_id=self.session_id,
             title=title,
             description=description,
             creator=creator,
+            parent_hypothesis_id=parent_hypothesis_id,
             status=HypothesisStatus.ACTIVE,
             confidence=confidence,
         )
+        if confidence is not None:
+            hyp.agent_assessments[creator] = AgentAssessment(
+                agent_id=creator,
+                confidence_score=confidence,
+                rationale="Initial author assessment",
+            )
         self.storage.save_hypothesis(hyp)
         return hyp
+
+    def add_evidence(
+        self,
+        hypothesis_id: str,
+        evidence_type: EvidenceType,
+        relation: EvidenceRelation,
+        source_agent_id: str,
+        source_id: str,
+        rationale: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Optional[EvidenceItem]:
+        hyp = self.storage.get_hypothesis(hypothesis_id)
+        if not hyp:
+            return None
+        ev = EvidenceItem(
+            evidence_type=evidence_type,
+            relation=relation,
+            source_agent_id=source_agent_id,
+            source_id=source_id,
+            rationale=rationale,
+            details=details or {},
+        )
+        hyp.evidence_graph.append(ev)
+        
+        # Update hypothesis state if evidence is conclusive
+        supports = sum(1 for e in hyp.evidence_graph if e.relation == EvidenceRelation.SUPPORTS)
+        contradicts = sum(1 for e in hyp.evidence_graph if e.relation == EvidenceRelation.CONTRADICTS)
+        
+        if contradicts > 0 and supports == 0:
+            hyp.status = HypothesisStatus.CONTRADICTED
+        elif supports > 0 and contradicts == 0:
+            hyp.status = HypothesisStatus.SUPPORTED
+        elif supports > 0 and contradicts > 0:
+            hyp.status = HypothesisStatus.INCONCLUSIVE
+
+        hyp.updated_at = utc_now_iso()
+        self.storage.save_hypothesis(hyp)
+        return ev
+
+    def assess_hypothesis(
+        self,
+        hypothesis_id: str,
+        agent_id: str,
+        confidence_score: float,
+        rationale: str,
+    ) -> Optional[AgentAssessment]:
+        hyp = self.storage.get_hypothesis(hypothesis_id)
+        if not hyp:
+            return None
+        assessment = AgentAssessment(
+            agent_id=agent_id,
+            confidence_score=confidence_score,
+            rationale=rationale,
+        )
+        hyp.agent_assessments[agent_id] = assessment
+        # Update overall consensus confidence
+        scores = [a.confidence_score for a in hyp.agent_assessments.values()]
+        hyp.confidence = sum(scores) / len(scores) if scores else None
+        hyp.updated_at = utc_now_iso()
+        self.storage.save_hypothesis(hyp)
+        return assessment
 
     def challenge_hypothesis(
         self,
@@ -78,37 +151,23 @@ class InvestigationSession:
         hyp = self.storage.get_hypothesis(hypothesis_id)
         if not hyp:
             return None
-        hyp.evidence_against.append(f"[{challenger}] {reason}")
-        if counter_evidence:
-            hyp.evidence_against.append(f"[{challenger} Evidence] {counter_evidence}")
-        hyp.confidence = max(0.0, hyp.confidence - 0.2)
-        hyp.status = HypothesisStatus.CONTRADICTED if hyp.confidence < 0.3 else HypothesisStatus.ACTIVE
-        hyp.updated_at = utc_now_iso()
-        self.storage.save_hypothesis(hyp)
-        return hyp
-
-    def update_hypothesis(
-        self,
-        hypothesis_id: str,
-        status: Optional[HypothesisStatus] = None,
-        confidence: Optional[float] = None,
-        supporting_run_id: Optional[int] = None,
-        contradicting_run_id: Optional[int] = None,
-    ) -> Optional[Hypothesis]:
-        hyp = self.storage.get_hypothesis(hypothesis_id)
-        if not hyp:
-            return None
-        if status:
-            hyp.status = status
-        if confidence is not None:
-            hyp.confidence = confidence
-        if supporting_run_id and supporting_run_id not in hyp.supporting_run_ids:
-            hyp.supporting_run_ids.append(supporting_run_id)
-        if contradicting_run_id and contradicting_run_id not in hyp.contradicting_run_ids:
-            hyp.contradicting_run_ids.append(contradicting_run_id)
-        hyp.updated_at = utc_now_iso()
-        self.storage.save_hypothesis(hyp)
-        return hyp
+        
+        self.add_evidence(
+            hypothesis_id=hypothesis_id,
+            evidence_type=EvidenceType.COUNTER_HYPOTHESIS,
+            relation=EvidenceRelation.CONTRADICTS,
+            source_agent_id=challenger,
+            source_id=counter_evidence or "reasoning",
+            rationale=reason,
+        )
+        # Update assessment for challenger
+        self.assess_hypothesis(
+            hypothesis_id=hypothesis_id,
+            agent_id=challenger,
+            confidence_score=0.2,
+            rationale=f"Challenged: {reason}",
+        )
+        return self.storage.get_hypothesis(hypothesis_id)
 
     def get_hypotheses(self) -> List[Hypothesis]:
         return self.storage.get_hypotheses(session_id=self.session_id)
@@ -118,10 +177,10 @@ class InvestigationSession:
         all_hyp = self.get_hypotheses()
         return [
             h for h in all_hyp
-            if h.status in (HypothesisStatus.PROPOSED, HypothesisStatus.ACTIVE, HypothesisStatus.CONTRADICTED)
+            if h.status in (HypothesisStatus.PROPOSED, HypothesisStatus.ACTIVE, HypothesisStatus.INCONCLUSIVE)
         ]
 
-    # --- Experiments Management ---
+    # --- Experiments ---
 
     def propose_experiment(
         self,
@@ -181,21 +240,26 @@ class InvestigationSession:
 
         self.storage.save_run(run)
 
-        # Update hypothesis evidence if attached
+        # Update hypothesis evidence graph if hypothesis attached
         if run.hypothesis_id:
             if corr_res.reproduced and "SUPPORTED" in (corr_res.hypothesis_verdict or ""):
-                self.update_hypothesis(
-                    run.hypothesis_id,
-                    status=HypothesisStatus.SUPPORTED,
-                    confidence=0.85,
-                    supporting_run_id=run.run_id,
+                self.add_evidence(
+                    hypothesis_id=run.hypothesis_id,
+                    evidence_type=EvidenceType.RUN,
+                    relation=EvidenceRelation.SUPPORTS,
+                    source_agent_id="crosslab-correlator",
+                    source_id=str(run.run_id),
+                    rationale=corr_res.hypothesis_verdict or f"Correlated discrepancies in Run {run.run_id}",
+                    details={"discrepancies_count": len(corr_res.discrepancies)},
                 )
             elif not corr_res.reproduced and run.outcome == RunOutcome.NOT_REPRODUCED:
-                self.update_hypothesis(
-                    run.hypothesis_id,
-                    status=HypothesisStatus.CONTRADICTED,
-                    confidence=0.2,
-                    contradicting_run_id=run.run_id,
+                self.add_evidence(
+                    hypothesis_id=run.hypothesis_id,
+                    evidence_type=EvidenceType.RUN,
+                    relation=EvidenceRelation.CONTRADICTS,
+                    source_agent_id="crosslab-correlator",
+                    source_id=str(run.run_id),
+                    rationale="Run completed without failure reproduction",
                 )
 
         return run
@@ -207,13 +271,11 @@ class InvestigationSession:
         return self.storage.get_run(run_id, session_id=self.session_id)
 
     def get_latest_reproducing_run(self) -> Optional[RunRecord]:
-        """Which experiment last reproduced the bug?"""
         runs = self.get_runs()
         reproduced = [r for r in runs if r.outcome == RunOutcome.REPRODUCED]
         return reproduced[-1] if reproduced else None
 
     def diff_runs(self, run_id_a: int, run_id_b: int) -> Optional[Dict[str, Any]]:
-        """What changed between Run A and Run B?"""
         run_a = self.get_run(run_id_a)
         run_b = self.get_run(run_id_b)
         if not run_a or not run_b:
@@ -229,6 +291,10 @@ class InvestigationSession:
         metric_name: str,
         value: Any,
         unit: Optional[str] = None,
+        clock_offset_ms: float = 0.0,
+        clock_uncertainty_ms: float = 0.0,
+        sequence_num: int = 0,
+        causal_parent_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
         notes: Optional[str] = None,
     ) -> Observation:
@@ -236,6 +302,10 @@ class InvestigationSession:
             session_id=self.session_id,
             run_id=run_id,
             agent_id=agent_id,
+            clock_offset_ms=clock_offset_ms,
+            clock_uncertainty_ms=clock_uncertainty_ms,
+            sequence_num=sequence_num,
+            causal_parent_id=causal_parent_id,
             metric_name=metric_name,
             value=value,
             unit=unit,
@@ -249,12 +319,14 @@ class InvestigationSession:
         return self.storage.get_observations(session_id=self.session_id, run_id=run_id)
 
     def get_contradicting_observations(self, hypothesis_id: str) -> List[Observation]:
-        """Which observations contradict our current theory?"""
         hyp = self.storage.get_hypothesis(hypothesis_id)
-        if not hyp or not hyp.contradicting_run_ids:
+        if not hyp:
+            return []
+        contradicting_run_ids = hyp.contradicting_run_ids
+        if not contradicting_run_ids:
             return []
         contradicting_obs = []
-        for run_id in hyp.contradicting_run_ids:
+        for run_id in contradicting_run_ids:
             contradicting_obs.extend(self.get_observations(run_id=run_id))
         return contradicting_obs
 

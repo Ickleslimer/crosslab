@@ -18,7 +18,7 @@ import uvicorn
 
 from crosslab.cases.fear3.scenario import run_fear3_investigation_demo
 from crosslab.engine.session import InvestigationSession
-from crosslab.mcp.server import CrossLabMCPServer, main as mcp_main
+from crosslab.mcp.server import CrossLabMCPServer
 from crosslab.protocol.actions import AgentRole
 from crosslab.transport.node import A2ANode
 
@@ -33,7 +33,19 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
-    mcp_main()
+    server = CrossLabMCPServer(node_url=args.node_url)
+    if args.test:
+        tools = server.get_tool_definitions()
+        console.print(f"[bold green]CrossLab MCP Server[/bold green] ({len(tools)} tools registered):")
+        for t in tools:
+            console.print(f"  - [cyan]{t['name']}[/cyan]: {t['description']}")
+        return
+
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        response = server.handle_json_rpc(line.strip())
+        print(response, flush=True)
 
 
 def cmd_node(args: argparse.Namespace) -> None:
@@ -45,25 +57,17 @@ def cmd_node(args: argparse.Namespace) -> None:
         port=args.port,
         session_id=args.session,
         db_path=args.db or f"./crosslab_{args.session}.db",
+        initial_peer_url=args.peer,
     )
     console.print(f"[bold green]Starting CrossLab A2A Node[/bold green]")
     console.print(f"  Agent ID:   [cyan]{node.agent_id}[/cyan]")
     console.print(f"  Role:       [yellow]{node.role.value}[/yellow]")
     console.print(f"  Endpoint:   [blue]{node.endpoint_url}[/blue]")
+    console.print(f"  Agent Card: [blue]{node.endpoint_url}/.well-known/agent-card.json[/blue]")
     console.print(f"  Session ID: [magenta]{node.session_id}[/magenta]")
 
     if args.peer:
-        console.print(f"  Connecting to peer at [blue]{args.peer}[/blue]...")
-
-        async def init_peer() -> None:
-            await asyncio.sleep(0.5)
-            try:
-                await node.connect_to_peer(args.peer)
-                console.print(f"  [green][OK][/green] Connected to peer {args.peer}")
-            except Exception as e:
-                console.print(f"  [red]Warning: Could not connect to peer {args.peer}: {e}[/red]")
-
-        asyncio.create_task(init_peer())
+        console.print(f"  Configured initial peer: [blue]{args.peer}[/blue] (will connect via lifespan startup)")
 
     uvicorn.run(node.app, host=args.host, port=args.port, log_level="info")
 
@@ -98,6 +102,7 @@ def main() -> None:
 
     # mcp
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server for IDEs & AI coding agents")
+    mcp_parser.add_argument("--node-url", type=str, default=None, help="Connect MCP to local node URL (e.g. http://127.0.0.1:8000)")
     mcp_parser.add_argument("--test", action="store_true", help="List registered MCP tools and exit")
 
     # node

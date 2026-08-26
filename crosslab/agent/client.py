@@ -1,15 +1,23 @@
 """
 CrossLab Agent Client SDK.
-Provides a clean, high-level asynchronous and synchronous interface for coding agents.
+Provides a clean, high-level asynchronous interface for AI coding agents to communicate over A2A.
 """
 
 from typing import Any, Dict, List, Optional
 import httpx
 
-from crosslab.protocol.actions import ActionType, AgentRole, HypothesisStatus
+from crosslab.protocol.actions import (
+    ActionType,
+    AgentRole,
+    EvidenceRelation,
+    EvidenceType,
+    HypothesisStatus,
+)
 from crosslab.protocol.models import (
+    AgentCard,
     ArtifactPayload,
     CorrelationResult,
+    EvidenceItem,
     Experiment,
     Hypothesis,
     InstrumentationRequest,
@@ -17,6 +25,7 @@ from crosslab.protocol.models import (
     Observation,
     RunRecord,
     SyncRunSignal,
+    get_monotonic_ns,
 )
 
 
@@ -35,12 +44,19 @@ class CrossLabClient:
             res = await client.get(f"{self.base_url}/health")
             return res.json()
 
+    async def get_agent_card(self) -> AgentCard:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            res = await client.get(f"{self.base_url}/.well-known/agent-card.json")
+            return AgentCard(**res.json())
+
     async def send_chat(self, text: str, recipient_id: Optional[str] = None) -> Dict[str, Any]:
         envelope = MessageEnvelope(
             sender_id=self.agent_id,
+            origin_sender_id=self.agent_id,
             recipient_id=recipient_id,
             action=ActionType.CHAT,
             natural_language=text,
+            relay=True,
         )
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
@@ -50,30 +66,86 @@ class CrossLabClient:
         self,
         title: str,
         description: str,
+        parent_hypothesis_id: Optional[str] = None,
         natural_language: Optional[str] = None,
-        confidence: float = 0.5,
+        confidence: Optional[float] = 0.5,
     ) -> Hypothesis:
         hyp = Hypothesis(
             title=title,
             description=description,
             creator=self.agent_id,
+            parent_hypothesis_id=parent_hypothesis_id,
             confidence=confidence,
         )
-        # 1. Store hypothesis locally
+        # Store locally & broadcast envelope
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(f"{self.base_url}/v1/a2a/hypotheses", json=hyp.model_dump())
 
-            # 2. Broadcast envelope to peers
             nl_text = natural_language or f"I propose the hypothesis: '{title}' - {description}"
             envelope = MessageEnvelope(
                 sender_id=self.agent_id,
+                origin_sender_id=self.agent_id,
                 action=ActionType.PROPOSE_HYPOTHESIS,
                 natural_language=nl_text,
                 payload={"hypothesis": hyp.model_dump()},
+                relay=True,
             )
             await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
 
         return hyp
+
+    async def add_evidence(
+        self,
+        hypothesis_id: str,
+        evidence_type: EvidenceType,
+        relation: EvidenceRelation,
+        rationale: str,
+        source_id: str = "agent-observation",
+        details: Optional[Dict[str, Any]] = None,
+        natural_language: Optional[str] = None,
+    ) -> EvidenceItem:
+        ev = EvidenceItem(
+            evidence_type=evidence_type,
+            relation=relation,
+            source_agent_id=self.agent_id,
+            source_id=source_id,
+            rationale=rationale,
+            details=details or {},
+        )
+        nl_text = natural_language or f"Added {relation.value} evidence to hypothesis {hypothesis_id}: {rationale}"
+        envelope = MessageEnvelope(
+            sender_id=self.agent_id,
+            origin_sender_id=self.agent_id,
+            action=ActionType.ADD_EVIDENCE,
+            natural_language=nl_text,
+            payload={"hypothesis_id": hypothesis_id, "evidence": ev.model_dump()},
+            relay=True,
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
+        return ev
+
+    async def assess_hypothesis(
+        self,
+        hypothesis_id: str,
+        confidence_score: float,
+        rationale: str,
+    ) -> Dict[str, Any]:
+        envelope = MessageEnvelope(
+            sender_id=self.agent_id,
+            origin_sender_id=self.agent_id,
+            action=ActionType.ASSESS_HYPOTHESIS,
+            natural_language=f"Assessed hypothesis {hypothesis_id} at {confidence_score:.2f} confidence: {rationale}",
+            payload={
+                "hypothesis_id": hypothesis_id,
+                "confidence_score": confidence_score,
+                "rationale": rationale,
+            },
+            relay=True,
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
+            return res.json()
 
     async def challenge_hypothesis(
         self,
@@ -85,6 +157,7 @@ class CrossLabClient:
         nl_text = natural_language or f"I challenge hypothesis {hypothesis_id}: {reason}"
         envelope = MessageEnvelope(
             sender_id=self.agent_id,
+            origin_sender_id=self.agent_id,
             action=ActionType.CHALLENGE_HYPOTHESIS,
             natural_language=nl_text,
             payload={
@@ -92,6 +165,7 @@ class CrossLabClient:
                 "reason": reason,
                 "counter_evidence": counter_evidence,
             },
+            relay=True,
         )
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
@@ -127,9 +201,11 @@ class CrossLabClient:
             )
             envelope = MessageEnvelope(
                 sender_id=self.agent_id,
+                origin_sender_id=self.agent_id,
                 action=ActionType.PROPOSE_EXPERIMENT,
                 natural_language=nl_text,
                 payload={"experiment": exp.model_dump()},
+                relay=True,
             )
             await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
 
@@ -143,9 +219,11 @@ class CrossLabClient:
         nl_text = natural_language or f"I accept experiment {experiment_id}. Ready to instrument."
         envelope = MessageEnvelope(
             sender_id=self.agent_id,
+            origin_sender_id=self.agent_id,
             action=ActionType.ACCEPT_EXPERIMENT,
             natural_language=nl_text,
             payload={"experiment_id": experiment_id},
+            relay=True,
         )
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
@@ -161,44 +239,39 @@ class CrossLabClient:
             run_id=run_id,
             sender_id=self.agent_id,
             phase=phase,
+            monotonic_ns=get_monotonic_ns(),
             payload=payload or {},
         )
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(f"{self.base_url}/v1/a2a/runs/sync", json=signal.model_dump())
             return res.json()
 
+    async def add_observation(
+        self,
+        run_id: int,
+        metric_name: str,
+        value: Any,
+        unit: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        notes: Optional[str] = None,
+    ) -> Observation:
+        obs = Observation(
+            run_id=run_id,
+            agent_id=self.agent_id,
+            monotonic_ns=get_monotonic_ns(),
+            metric_name=metric_name,
+            value=value,
+            unit=unit,
+            tags=tags or [],
+            notes=notes,
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(f"{self.base_url}/v1/a2a/observations", json=obs.model_dump())
+        return obs
+
     async def submit_run_record(self, run: RunRecord) -> Dict[str, Any]:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(f"{self.base_url}/v1/a2a/runs", json=run.model_dump())
-            return res.json()
-
-    async def request_instrumentation(
-        self,
-        target_agent_id: str,
-        target_module: str,
-        trace_type: str,
-        rationale: str,
-        target_function: Optional[str] = None,
-        parameters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        req = InstrumentationRequest(
-            requester_id=self.agent_id,
-            target_agent_id=target_agent_id,
-            target_module=target_module,
-            target_function=target_function,
-            trace_type=trace_type,
-            parameters=parameters or {},
-            rationale=rationale,
-        )
-        envelope = MessageEnvelope(
-            sender_id=self.agent_id,
-            recipient_id=target_agent_id,
-            action=ActionType.REQUEST_INSTRUMENTATION,
-            natural_language=f"Please instrument {target_module} ({trace_type}): {rationale}",
-            payload={"request": req.model_dump()},
-        )
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
             return res.json()
 
     async def share_patch(
@@ -218,9 +291,11 @@ class CrossLabClient:
             await client.post(f"{self.base_url}/v1/a2a/artifacts", json=art.model_dump())
             envelope = MessageEnvelope(
                 sender_id=self.agent_id,
+                origin_sender_id=self.agent_id,
                 action=ActionType.SHARE_PATCH,
                 natural_language=f"I've shared a patch '{filename}': {description}",
                 payload={"artifact": art.model_dump()},
+                relay=True,
             )
             await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
         return art

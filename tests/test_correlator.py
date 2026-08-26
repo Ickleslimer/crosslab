@@ -25,14 +25,15 @@ def test_correlation_packet_drop_and_asymmetric_disconnect() -> None:
         },
     )
 
-    corr = CorrelationEngine.correlate_run(run)
+    corr = CorrelationEngine().correlate_run(run)
     assert corr.run_id == 14
     assert corr.reproduced is True
-    assert len(corr.discrepancies) == 2
+    assert len(corr.discrepancies) >= 2
 
     codes = [d.code for d in corr.discrepancies]
-    assert "PACKET_RECEIPT_LAG_OR_DROP" in codes
-    assert "ASYMMETRIC_DISCONNECT_REASON" in codes
+    assert "PACKET_SEQUENCE_GAP" in codes
+    assert "FEAR3_ASYMMETRIC_UI_MISINFORMATION" in codes
+    assert "UNRECIPROCATED_TRANSPORT_SUCCESS" in codes
 
     assert "SUPPORTED" in (corr.hypothesis_verdict or "")
     assert len(corr.suggested_next_steps) >= 2

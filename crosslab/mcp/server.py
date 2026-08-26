@@ -1,50 +1,95 @@
 """
 Model Context Protocol (MCP) Server for CrossLab.
-Exposes investigation tools to AI coding agents (Antigravity, Claude Code, Cursor, Gemini).
+Exposes investigation tools to AI coding agents and bridges requests to live A2A nodes.
 """
 
+import argparse
 import asyncio
 import json
+import os
 import sys
 from typing import Any, Dict, List, Optional
+import httpx
 
 from crosslab.agent.client import CrossLabClient
 from crosslab.engine.session import InvestigationSession
-from crosslab.protocol.actions import AgentRole, RunOutcome
+from crosslab.protocol.actions import AgentRole, EvidenceRelation, EvidenceType, RunOutcome
 from crosslab.protocol.models import RunRecord
 
 
 class CrossLabMCPServer:
     """
-    MCP Server providing tool execution over standard IO or in-process.
+    MCP Server providing tool execution over stdio or in-process.
+    Bridges agent tool calls to the local A2A Node, which relays them across the network.
     """
 
-    def __init__(self, session_or_client: Any = None):
-        if isinstance(session_or_client, InvestigationSession):
-            self.session = session_or_client
-            self.client = None
-        elif isinstance(session_or_client, CrossLabClient):
-            self.client = session_or_client
-            self.session = None
+    def __init__(self, node_url: Optional[str] = None, agent_id: str = "agent-mcp"):
+        self.agent_id = agent_id
+        env_url = os.environ.get("CROSSLAB_NODE_URL")
+        target_url = node_url or env_url
+
+        if target_url:
+            self.client: Optional[CrossLabClient] = CrossLabClient(base_url=target_url, agent_id=agent_id)
+            self.session: Optional[InvestigationSession] = None
         else:
-            # Default to in-process memory session
-            self.session = InvestigationSession(session_id="default")
             self.client = None
+            self.session = InvestigationSession(session_id="default")
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         return [
             {
+                "name": "crosslab_send_chat",
+                "description": "Send a natural language message or reasoning update to peer agents across the network.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string", "description": "Natural language text message"},
+                        "recipient_id": {"type": "string", "description": "Optional specific recipient agent ID"},
+                    },
+                    "required": ["message"],
+                },
+            },
+            {
                 "name": "crosslab_propose_hypothesis",
-                "description": "Propose a new empirical hypothesis regarding the distributed bug.",
+                "description": "Propose an empirical hypothesis regarding the bug and broadcast it to peer agents.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "title": {"type": "string", "description": "Short title of the hypothesis"},
-                        "description": {"type": "string", "description": "Detailed explanation and mechanism"},
-                        "creator": {"type": "string", "description": "Name or role of agent proposing it"},
+                        "description": {"type": "string", "description": "Detailed mechanism and reasoning"},
+                        "parent_hypothesis_id": {"type": "string", "description": "Optional parent hypothesis ID if this is a refinement"},
+                        "creator": {"type": "string", "description": "Agent proposing the hypothesis"},
                         "confidence": {"type": "number", "description": "Initial confidence 0.0 to 1.0", "default": 0.5},
                     },
                     "required": ["title", "description", "creator"],
+                },
+            },
+            {
+                "name": "crosslab_add_evidence",
+                "description": "Attach an explicit supporting or contradicting evidence item to a hypothesis.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hypothesis_id": {"type": "string", "description": "Hypothesis ID"},
+                        "relation": {"type": "string", "enum": ["supports", "contradicts", "qualifies", "inconclusive"]},
+                        "evidence_type": {"type": "string", "enum": ["run", "observation", "log", "counter_hypothesis"]},
+                        "source_id": {"type": "string", "description": "Identifier of source (e.g. run ID '14')"},
+                        "rationale": {"type": "string", "description": "Why this evidence supports or contradicts the hypothesis"},
+                    },
+                    "required": ["hypothesis_id", "relation", "rationale"],
+                },
+            },
+            {
+                "name": "crosslab_assess_hypothesis",
+                "description": "Record an agent's confidence assessment on a hypothesis with reasoning.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hypothesis_id": {"type": "string", "description": "Hypothesis ID"},
+                        "confidence_score": {"type": "number", "description": "Subjective confidence score (0.0 to 1.0)"},
+                        "rationale": {"type": "string", "description": "Reasoning for the confidence rating"},
+                    },
+                    "required": ["hypothesis_id", "confidence_score", "rationale"],
                 },
             },
             {
@@ -126,7 +171,7 @@ class CrossLabMCPServer:
             },
             {
                 "name": "crosslab_share_patch",
-                "description": "Share a patch or diff file with the collaborating agent.",
+                "description": "Share a patch or diff file with the collaborating agent across the network.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -140,19 +185,155 @@ class CrossLabMCPServer:
             },
         ]
 
+    async def execute_tool_async(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        if self.client:
+            return await self._execute_tool_via_client(name, arguments)
+        elif self.session:
+            return self._execute_tool_in_process(name, arguments)
+        return {"error": "Neither node client nor session initialized"}
+
     def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Synchronous wrapper for MCP JSON-RPC handling."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            # Already in loop: run in executor or direct task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, self.execute_tool_async(name, arguments))
+                return future.result()
+        else:
+            return loop.run_until_complete(self.execute_tool_async(name, arguments))
+
+    async def _execute_tool_via_client(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        client = self.client
+        assert client is not None
+
+        if name == "crosslab_send_chat":
+            return await client.send_chat(text=arguments["message"], recipient_id=arguments.get("recipient_id"))
+
+        elif name == "crosslab_propose_hypothesis":
+            hyp = await client.propose_hypothesis(
+                title=arguments["title"],
+                description=arguments["description"],
+                parent_hypothesis_id=arguments.get("parent_hypothesis_id"),
+                confidence=arguments.get("confidence", 0.5),
+            )
+            return {"status": "ok", "hypothesis": hyp.model_dump()}
+
+        elif name == "crosslab_add_evidence":
+            ev = await client.add_evidence(
+                hypothesis_id=arguments["hypothesis_id"],
+                evidence_type=EvidenceType(arguments.get("evidence_type", "run")),
+                relation=EvidenceRelation(arguments["relation"]),
+                source_id=arguments.get("source_id", "agent"),
+                rationale=arguments["rationale"],
+            )
+            return {"status": "ok", "evidence": ev.model_dump()}
+
+        elif name == "crosslab_assess_hypothesis":
+            return await client.assess_hypothesis(
+                hypothesis_id=arguments["hypothesis_id"],
+                confidence_score=arguments["confidence_score"],
+                rationale=arguments["rationale"],
+            )
+
+        elif name == "crosslab_challenge_hypothesis":
+            return await client.challenge_hypothesis(
+                hypothesis_id=arguments["hypothesis_id"],
+                reason=arguments["reason"],
+                counter_evidence=arguments.get("counter_evidence"),
+            )
+
+        elif name == "crosslab_propose_experiment":
+            exp = await client.propose_experiment(
+                run_id=arguments["run_id"],
+                title=arguments["title"],
+                rationale=arguments["rationale"],
+                host_role=arguments["host_role"],
+                client_role=arguments["client_role"],
+                hypothesis_id=arguments.get("hypothesis_id"),
+                parameters=arguments.get("parameters"),
+            )
+            return {"status": "ok", "experiment": exp.model_dump()}
+
+        elif name == "crosslab_record_run":
+            outcome_val = arguments.get("outcome", "reproduced")
+            outcome = RunOutcome(outcome_val) if outcome_val in [e.value for e in RunOutcome] else RunOutcome.REPRODUCED
+            run = RunRecord(
+                run_id=arguments["run_id"],
+                hypothesis_id=arguments.get("hypothesis_id"),
+                build=arguments.get("build", "default"),
+                participants=arguments.get("participants", []),
+                outcome=outcome,
+                host=arguments.get("host", {}),
+                client=arguments.get("client", {}),
+                logs=arguments.get("logs", []),
+            )
+            return await client.submit_run_record(run)
+
+        elif name == "crosslab_correlate_run":
+            corr = await client.get_correlate(arguments["run_id"])
+            return {"status": "ok", "correlation": corr.model_dump()}
+
+        elif name == "crosslab_query_investigation":
+            summary = await client.get_summary()
+            qtype = arguments["query_type"]
+            if qtype == "summary":
+                return summary
+            elif qtype == "unresolved_hypotheses":
+                return {"unresolved_hypotheses": summary.get("unresolved_hypotheses", [])}
+            elif qtype == "latest_reproduced":
+                return {"latest_reproduced_run_id": summary.get("latest_reproduced_run_id")}
+            return summary
+
+        elif name == "crosslab_share_patch":
+            art = await client.share_patch(
+                filename=arguments["filename"],
+                patch_content=arguments["patch_content"],
+                description=arguments["description"],
+            )
+            return {"status": "ok", "artifact": art.model_dump()}
+
+        return {"error": f"Tool '{name}' not found"}
+
+    def _execute_tool_in_process(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         session = self.session
-        if not session:
-            return {"error": "In-process session not initialized"}
+        assert session is not None
 
         if name == "crosslab_propose_hypothesis":
             hyp = session.propose_hypothesis(
                 title=arguments["title"],
                 description=arguments["description"],
                 creator=arguments["creator"],
+                parent_hypothesis_id=arguments.get("parent_hypothesis_id"),
                 confidence=arguments.get("confidence", 0.5),
             )
             return {"status": "ok", "hypothesis": hyp.model_dump()}
+
+        elif name == "crosslab_add_evidence":
+            ev = session.add_evidence(
+                hypothesis_id=arguments["hypothesis_id"],
+                evidence_type=EvidenceType(arguments.get("evidence_type", "run")),
+                relation=EvidenceRelation(arguments["relation"]),
+                source_agent_id=arguments.get("source_agent_id", "mcp-agent"),
+                source_id=arguments.get("source_id", "agent"),
+                rationale=arguments["rationale"],
+            )
+            return {"status": "ok", "evidence": ev.model_dump() if ev else None}
+
+        elif name == "crosslab_assess_hypothesis":
+            ass = session.assess_hypothesis(
+                hypothesis_id=arguments["hypothesis_id"],
+                agent_id=arguments.get("agent_id", "mcp-agent"),
+                confidence_score=arguments["confidence_score"],
+                rationale=arguments["rationale"],
+            )
+            return {"status": "ok", "assessment": ass.model_dump() if ass else None}
 
         elif name == "crosslab_challenge_hypothesis":
             hyp = session.challenge_hypothesis(
@@ -276,15 +457,20 @@ class CrossLabMCPServer:
 
 
 def main() -> None:
-    if "--test" in sys.argv:
-        server = CrossLabMCPServer()
+    parser = argparse.ArgumentParser(description="CrossLab MCP Server")
+    parser.add_argument("--node-url", type=str, default=None, help="Target CrossLab node URL e.g. http://127.0.0.1:8000")
+    parser.add_argument("--test", action="store_true", help="Print tool definitions and exit")
+    args = parser.parse_args()
+
+    server = CrossLabMCPServer(node_url=args.node_url)
+
+    if args.test:
         tools = server.get_tool_definitions()
-        print(f"[CrossLab MCP Server] Initialized with {len(tools)} tools:")
+        print(f"[CrossLab MCP Server] Initialized with {len(tools)} tools (Bridge target: {server.client.base_url if server.client else 'in-process'}):")
         for t in tools:
             print(f"  - {t['name']}: {t['description']}")
         return
 
-    server = CrossLabMCPServer()
     for line in sys.stdin:
         if not line.strip():
             continue

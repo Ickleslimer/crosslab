@@ -16,10 +16,12 @@ class ActionType(str, Enum):
     # Conversational & Reasoning
     CHAT = "chat"
 
-    # Hypotheses
+    # Hypotheses & Evidence Graph
     PROPOSE_HYPOTHESIS = "propose_hypothesis"
     CHALLENGE_HYPOTHESIS = "challenge_hypothesis"
     UPDATE_HYPOTHESIS = "update_hypothesis"
+    ASSESS_HYPOTHESIS = "assess_hypothesis"
+    ADD_EVIDENCE = "add_evidence"
     RESOLVE_HYPOTHESIS = "resolve_hypothesis"
 
     # Experiments
@@ -54,12 +56,28 @@ class ActionType(str, Enum):
     CORRELATION_ANALYSIS = "correlation_analysis"
 
 
+class EvidenceType(str, Enum):
+    RUN = "run"
+    OBSERVATION = "observation"
+    LOG = "log"
+    COUNTER_HYPOTHESIS = "counter_hypothesis"
+    EXPERIMENT = "experiment"
+
+
+class EvidenceRelation(str, Enum):
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    QUALIFIES = "qualifies"
+    INCONCLUSIVE = "inconclusive"
+
+
 class HypothesisStatus(str, Enum):
     PROPOSED = "proposed"
+    UNDER_TEST = "under_test"
     ACTIVE = "active"
     SUPPORTED = "supported"
     CONTRADICTED = "contradicted"
-    REJECTED = "rejected"
+    INCONCLUSIVE = "inconclusive"
     RESOLVED = "resolved"
     ABANDONED = "abandoned"
 

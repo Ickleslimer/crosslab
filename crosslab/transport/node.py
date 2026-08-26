@@ -1,22 +1,25 @@
 """
 A2A Node and Transport Layer for CrossLab.
-Provides HTTP/REST, Server-Sent Events (SSE), and P2P communication between agent nodes.
+Provides HTTP/REST, A2A Agent Card Discovery, Server-Sent Events (SSE),
+bidirectional network relay, clock offset measurement, and P2P synchronization.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 import json
 import logging
+import time
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
-import uvicorn
 
 from crosslab.engine.session import InvestigationSession
 from crosslab.protocol.actions import ActionType, AgentRole
 from crosslab.protocol.models import (
+    AgentCard,
     AgentPeer,
     ArtifactPayload,
     CorrelationResult,
@@ -27,8 +30,11 @@ from crosslab.protocol.models import (
     InstrumentationRequest,
     MessageEnvelope,
     Observation,
+    PingRequest,
+    PongResponse,
     RunRecord,
     SyncRunSignal,
+    get_monotonic_ns,
     utc_now_iso,
 )
 
@@ -39,12 +45,13 @@ class A2ANode:
     def __init__(
         self,
         agent_id: str,
-        role: AgentRole,
+        role: AgentRole = AgentRole.HOST,
         host: str = "127.0.0.1",
         port: int = 8000,
         session_id: str = "default",
         db_path: str = ":memory:",
         machine_name: Optional[str] = None,
+        initial_peer_url: Optional[str] = None,
     ):
         self.agent_id = agent_id
         self.role = role
@@ -53,22 +60,66 @@ class A2ANode:
         self.endpoint_url = f"http://{host}:{port}"
         self.session_id = session_id
         self.machine_name = machine_name or f"Machine-{agent_id}"
+        self.initial_peer_url = initial_peer_url
         self.session = InvestigationSession(session_id=session_id, db_path=db_path)
+
+        self.agent_card = AgentCard(
+            name=f"CrossLab Node ({self.agent_id})",
+            description=f"Empirical collaboration agent operating in role '{self.role.value}'",
+            version="0.2.0",
+            url=self.endpoint_url,
+            role=self.role,
+            machine_name=self.machine_name,
+            endpoints={
+                "agent_card": f"{self.endpoint_url}/.well-known/agent-card.json",
+                "messages": f"{self.endpoint_url}/v1/a2a/messages",
+                "events": f"{self.endpoint_url}/v1/a2a/events",
+                "handshake": f"{self.endpoint_url}/v1/a2a/handshake",
+                "runs_sync": f"{self.endpoint_url}/v1/a2a/runs/sync",
+            },
+        )
 
         self.self_peer = AgentPeer(
             agent_id=self.agent_id,
             role=self.role,
             endpoint_url=self.endpoint_url,
             machine_name=self.machine_name,
+            capabilities=self.agent_card.capabilities,
         )
         self.session.register_peer(self.self_peer)
 
-        # Message queues for SSE subscribers
+        # SSE Subscribers
         self._subscribers: List[asyncio.Queue] = []
-        # Handlers for incoming action events
+        # Action Event Handlers
         self._action_handlers: Dict[ActionType, List[Callable[[MessageEnvelope], Any]]] = {}
+        # Seen message IDs for deduplication & echo loop prevention
+        self._seen_message_ids: set = set()
+        # Background tasks
+        self._bg_tasks: List[asyncio.Task] = []
 
-        self.app = FastAPI(title=f"CrossLab A2A Node - {agent_id}", version="0.1.0")
+        # Setup FastAPI with Lifespan
+        @asynccontextmanager
+        async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+            # Startup phase in running event loop
+            if self.initial_peer_url:
+                task = asyncio.create_task(self._connect_peer_loop(self.initial_peer_url))
+                self._bg_tasks.append(task)
+
+            # Start periodic heartbeat & clock sync
+            ping_task = asyncio.create_task(self._periodic_heartbeat_loop())
+            self._bg_tasks.append(ping_task)
+
+            yield
+
+            # Shutdown phase
+            for t in self._bg_tasks:
+                t.cancel()
+
+        self.app = FastAPI(
+            title=f"CrossLab A2A Node - {agent_id}",
+            version="0.2.0",
+            lifespan=lifespan,
+        )
         self._setup_middleware()
         self._setup_routes()
 
@@ -85,8 +136,22 @@ class A2ANode:
         app = self.app
 
         @app.get("/health")
-        async def health() -> Dict[str, str]:
-            return {"status": "ok", "agent_id": self.agent_id, "role": self.role.value}
+        async def health() -> Dict[str, Any]:
+            return {
+                "status": "ok",
+                "agent_id": self.agent_id,
+                "role": self.role.value,
+                "version": "0.2.0",
+            }
+
+        # --- A2A 1.0 Agent Card Discovery ---
+
+        @app.get("/.well-known/agent-card.json", response_model=AgentCard)
+        @app.get("/agent-card.json", response_model=AgentCard)
+        async def get_agent_card() -> AgentCard:
+            return self.agent_card
+
+        # --- Discovery & Handshake ---
 
         @app.post("/v1/a2a/handshake", response_model=HandshakeResponse)
         async def handshake(req: HandshakeRequest) -> HandshakeResponse:
@@ -98,9 +163,8 @@ class A2ANode:
                 capabilities=req.capabilities,
             )
             self.session.register_peer(peer)
-            logger.info(f"[{self.agent_id}] Handshake from {req.agent_id} ({req.role.value}) at {req.endpoint_url}")
+            logger.info(f"[{self.agent_id}] Handshake accepted from {req.agent_id} ({req.role.value}) at {req.endpoint_url}")
 
-            # Notify local subscribers
             await self._broadcast_event({
                 "event": "peer_joined",
                 "peer": peer.model_dump(),
@@ -114,18 +178,38 @@ class A2ANode:
                 accepted=True,
                 message=f"Welcome {req.agent_id} to session {self.session_id}",
                 peers=peers,
+                agent_card=self.agent_card,
             )
 
         @app.get("/v1/a2a/peers", response_model=List[AgentPeer])
         async def get_peers() -> List[AgentPeer]:
             return self.session.get_peers()
 
+        # --- Clock Sync & Ping/Pong ---
+
+        @app.post("/v1/a2a/ping", response_model=PongResponse)
+        async def ping(req: PingRequest) -> PongResponse:
+            t1 = get_monotonic_ns()
+            t2 = get_monotonic_ns()
+            return PongResponse(
+                agent_id=self.agent_id,
+                t0_send_ns=req.t0_send_ns,
+                t1_recv_ns=t1,
+                t2_send_ns=t2,
+            )
+
+        # --- Messaging & Network Relay ---
+
         @app.post("/v1/a2a/messages")
         async def receive_message(envelope: MessageEnvelope) -> Dict[str, Any]:
-            self.session.record_message(envelope)
-            logger.info(f"[{self.agent_id}] Ingested message from {envelope.sender_id}: {envelope.action.value}")
+            if envelope.message_id in self._seen_message_ids:
+                return {"status": "already_processed", "message_id": envelope.message_id}
 
-            # Trigger custom action handlers
+            self._seen_message_ids.add(envelope.message_id)
+            self.session.record_message(envelope)
+            logger.info(f"[{self.agent_id}] Ingested message {envelope.message_id} from {envelope.sender_id}: {envelope.action.value}")
+
+            # Trigger action handlers
             handlers = self._action_handlers.get(envelope.action, [])
             for handler in handlers:
                 try:
@@ -133,13 +217,21 @@ class A2ANode:
                     if asyncio.iscoroutine(res):
                         asyncio.create_task(res)
                 except Exception as e:
-                    logger.error(f"Error executing action handler: {e}")
+                    logger.error(f"Error in action handler: {e}")
 
-            # Broadcast to SSE streams
+            # Broadcast to local SSE stream
             await self._broadcast_event({
                 "event": "message",
                 "envelope": envelope.model_dump(),
             })
+
+            # Relay to other remote peers across network if relay requested
+            if envelope.relay and envelope.hops < 5:
+                relayed_envelope = envelope.model_copy(deep=True)
+                relayed_envelope.hops += 1
+                relayed_envelope.sender_id = self.agent_id  # forwarder
+                asyncio.create_task(self._relay_to_peers(relayed_envelope))
+
             return {"status": "received", "message_id": envelope.message_id}
 
         @app.get("/v1/a2a/messages", response_model=List[MessageEnvelope])
@@ -148,13 +240,11 @@ class A2ANode:
 
         @app.get("/v1/a2a/events")
         async def sse_events(request: Request) -> StreamingResponse:
-            """SSE stream for real-time agent notifications and reactive wakeup."""
             q: asyncio.Queue = asyncio.Queue()
             self._subscribers.append(q)
 
             async def event_generator() -> AsyncGenerator[str, None]:
                 try:
-                    # Initial connection ping
                     yield f"data: {json.dumps({'event': 'connected', 'agent_id': self.agent_id})}\n\n"
                     while True:
                         if await request.is_disconnected():
@@ -167,8 +257,11 @@ class A2ANode:
 
             return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+        # --- Run Coordination & Barrier Sync ---
+
         @app.post("/v1/a2a/runs/sync")
         async def sync_run(signal: SyncRunSignal) -> Dict[str, Any]:
+            signal.session_id = self.session_id
             logger.info(f"[{self.agent_id}] Run {signal.run_id} sync signal: phase='{signal.phase}' from {signal.sender_id}")
             await self._broadcast_event({
                 "event": "sync_signal",
@@ -178,6 +271,7 @@ class A2ANode:
 
         @app.post("/v1/a2a/runs")
         async def record_run(run: RunRecord) -> Dict[str, Any]:
+            run.session_id = self.session_id
             saved_run = self.session.record_run(run)
             await self._broadcast_event({
                 "event": "run_recorded",
@@ -203,8 +297,11 @@ class A2ANode:
                 raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
             return self.session.correlator.correlate_run(run)
 
+        # --- Hypotheses & Evidence Graph ---
+
         @app.post("/v1/a2a/hypotheses", response_model=Hypothesis)
         async def propose_hypothesis(hyp: Hypothesis) -> Hypothesis:
+            hyp.session_id = self.session_id
             self.session.storage.save_hypothesis(hyp)
             await self._broadcast_event({
                 "event": "hypothesis_proposed",
@@ -218,6 +315,7 @@ class A2ANode:
 
         @app.post("/v1/a2a/experiments", response_model=Experiment)
         async def propose_experiment(exp: Experiment) -> Experiment:
+            exp.session_id = self.session_id
             self.session.storage.save_experiment(exp)
             await self._broadcast_event({
                 "event": "experiment_proposed",
@@ -231,6 +329,7 @@ class A2ANode:
 
         @app.post("/v1/a2a/observations", response_model=Observation)
         async def add_observation(obs: Observation) -> Observation:
+            obs.session_id = self.session_id
             self.session.storage.save_observation(obs)
             await self._broadcast_event({
                 "event": "observation_added",
@@ -244,6 +343,7 @@ class A2ANode:
 
         @app.post("/v1/a2a/artifacts", response_model=ArtifactPayload)
         async def share_artifact(art: ArtifactPayload) -> ArtifactPayload:
+            art.session_id = self.session_id
             self.session.storage.save_artifact(art)
             await self._broadcast_event({
                 "event": "artifact_shared",
@@ -271,10 +371,35 @@ class A2ANode:
             self._action_handlers[action] = []
         self._action_handlers[action].append(handler)
 
-    # --- Outbound P2P Communication ---
+    # --- Background Loops & Peer Management ---
+
+    async def _connect_peer_loop(self, peer_url: str) -> None:
+        await asyncio.sleep(0.2)
+        retries = 5
+        for attempt in range(retries):
+            try:
+                await self.connect_to_peer(peer_url)
+                logger.info(f"[{self.agent_id}] Successfully established handshake with initial peer {peer_url}")
+                break
+            except Exception as e:
+                logger.debug(f"Handshake attempt {attempt+1}/{retries} to {peer_url} failed: {e}")
+                await asyncio.sleep(1.0)
+
+    async def _periodic_heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(10.0)
+            peers = self.session.get_peers()
+            for peer in peers:
+                if peer.agent_id == self.agent_id:
+                    continue
+                try:
+                    await self.measure_clock_offset(peer.endpoint_url)
+                except Exception:
+                    pass
+
+    # --- Outbound P2P Communication & Relay ---
 
     async def connect_to_peer(self, peer_url: str) -> HandshakeResponse:
-        """Initiates handshake with a remote peer node."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             req = HandshakeRequest(
                 agent_id=self.agent_id,
@@ -283,38 +408,92 @@ class A2ANode:
                 machine_name=self.machine_name,
                 capabilities=self.self_peer.capabilities,
                 session_id=self.session_id,
+                agent_card=self.agent_card,
             )
             resp = await client.post(f"{peer_url.rstrip('/')}/v1/a2a/handshake", json=req.model_dump())
             resp.raise_for_status()
             data = resp.json()
             response = HandshakeResponse(**data)
 
-            # Register all peers learned from remote
+            # Register remote peers
             for p in response.peers:
                 if p.agent_id != self.agent_id:
                     self.session.register_peer(p)
 
-            # Also register remote peer directly
             remote_peer = AgentPeer(
                 agent_id=response.agent_id,
                 role=response.role,
                 endpoint_url=peer_url,
             )
             self.session.register_peer(remote_peer)
+
+            # Measure initial clock offset
+            try:
+                await self.measure_clock_offset(peer_url)
+            except Exception:
+                pass
+
             return response
 
-    async def send_message_to_peer(self, peer_url: str, envelope: MessageEnvelope) -> Dict[str, Any]:
-        """Transmits a structured message envelope to a specific peer."""
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{peer_url.rstrip('/')}/v1/a2a/messages",
-                json=envelope.model_dump(),
-            )
-            resp.raise_for_status()
-            return resp.json()
+    async def measure_clock_offset(self, peer_url: str) -> Dict[str, float]:
+        """Calculates NTP-style round-trip time and clock offset relative to peer."""
+        t0 = get_monotonic_ns()
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            ping_req = PingRequest(agent_id=self.agent_id, t0_send_ns=t0)
+            res = await client.post(f"{peer_url.rstrip('/')}/v1/a2a/ping", json=ping_req.model_dump())
+            res.raise_for_status()
+            pong = PongResponse(**res.json())
+            t3 = get_monotonic_ns()
+
+            t0_ns = pong.t0_send_ns
+            t1_ns = pong.t1_recv_ns
+            t2_ns = pong.t2_send_ns
+            t3_ns = t3
+
+            # RTT in ms
+            rtt_ns = (t3_ns - t0_ns) - (t2_ns - t1_ns)
+            rtt_ms = max(0.1, rtt_ns / 1_000_000.0)
+
+            # Offset in ms: ((t1 - t0) + (t2 - t3)) / 2
+            offset_ns = ((t1_ns - t0_ns) + (t2_ns - t3_ns)) / 2.0
+            offset_ms = offset_ns / 1_000_000.0
+            uncertainty_ms = rtt_ms / 2.0
+
+            # Update peer in storage
+            peers = self.session.get_peers()
+            for p in peers:
+                if p.endpoint_url.rstrip("/") == peer_url.rstrip("/"):
+                    p.clock_offset_ms = offset_ms
+                    p.clock_uncertainty_ms = uncertainty_ms
+                    self.session.register_peer(p)
+                    break
+
+            return {"rtt_ms": rtt_ms, "offset_ms": offset_ms, "uncertainty_ms": uncertainty_ms}
+
+    async def _relay_to_peers(self, envelope: MessageEnvelope) -> None:
+        """Relays a message envelope to all other known registered peers across the network."""
+        peers = self.session.get_peers()
+        for peer in peers:
+            # Skip self, original sender, and immediate previous sender
+            if (
+                peer.agent_id == self.agent_id
+                or peer.agent_id == envelope.origin_sender_id
+                or peer.agent_id == envelope.sender_id
+            ):
+                continue
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(
+                        f"{peer.endpoint_url.rstrip('/')}/v1/a2a/messages",
+                        json=envelope.model_dump(),
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to relay message to {peer.agent_id} ({peer.endpoint_url}): {e}")
 
     async def broadcast_message(self, envelope: MessageEnvelope) -> List[Dict[str, Any]]:
-        """Broadcasts a message to all known registered peers (except self)."""
+        """Originates or broadcasts a message to all registered peers."""
+        self._seen_message_ids.add(envelope.message_id)
         self.session.record_message(envelope)
         peers = self.session.get_peers()
         results = []
@@ -322,15 +501,17 @@ class A2ANode:
             if peer.agent_id == self.agent_id:
                 continue
             try:
-                res = await self.send_message_to_peer(peer.endpoint_url, envelope)
-                results.append({"peer_id": peer.agent_id, "status": "sent", "response": res})
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    res = await client.post(
+                        f"{peer.endpoint_url.rstrip('/')}/v1/a2a/messages",
+                        json=envelope.model_dump(),
+                    )
+                    results.append({"peer_id": peer.agent_id, "status": "sent", "response": res.json()})
             except Exception as e:
-                logger.warning(f"Failed to send message to peer {peer.agent_id} ({peer.endpoint_url}): {e}")
                 results.append({"peer_id": peer.agent_id, "status": "error", "error": str(e)})
         return results
 
     async def send_sync_signal(self, peer_url: str, signal: SyncRunSignal) -> Dict[str, Any]:
-        """Sends a synchronized run coordinate signal."""
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 f"{peer_url.rstrip('/')}/v1/a2a/runs/sync",

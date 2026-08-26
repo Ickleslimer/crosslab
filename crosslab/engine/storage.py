@@ -6,12 +6,23 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import threading
 from typing import Any, Dict, List, Optional
 
-from crosslab.protocol.actions import ExperimentStatus, HypothesisStatus, RunOutcome
+from crosslab.protocol.actions import (
+    AgentRole,
+    EvidenceRelation,
+    EvidenceType,
+    ExperimentStatus,
+    HypothesisStatus,
+    RunOutcome,
+)
 from crosslab.protocol.models import (
+    AgentAssessment,
+    AgentCard,
     AgentPeer,
     ArtifactPayload,
+    EvidenceItem,
     Experiment,
     Hypothesis,
     InstrumentationRequest,
@@ -19,9 +30,6 @@ from crosslab.protocol.models import (
     Observation,
     RunRecord,
 )
-
-
-import threading
 
 
 class Storage:
@@ -64,6 +72,8 @@ class Storage:
                     endpoint_url TEXT,
                     machine_name TEXT,
                     capabilities TEXT,
+                    clock_offset_ms REAL DEFAULT 0.0,
+                    clock_uncertainty_ms REAL DEFAULT 0.0,
                     joined_at TEXT,
                     metadata TEXT
                 );
@@ -73,8 +83,11 @@ class Storage:
                     session_id TEXT,
                     conversation_id TEXT,
                     sender_id TEXT,
+                    origin_sender_id TEXT,
                     recipient_id TEXT,
                     timestamp TEXT,
+                    monotonic_ns INTEGER,
+                    hops INTEGER DEFAULT 0,
                     action TEXT,
                     natural_language TEXT,
                     payload TEXT
@@ -87,11 +100,10 @@ class Storage:
                     description TEXT,
                     creator TEXT,
                     status TEXT,
+                    parent_hypothesis_id TEXT,
                     confidence REAL,
-                    evidence_for TEXT,
-                    evidence_against TEXT,
-                    supporting_run_ids TEXT,
-                    contradicting_run_ids TEXT,
+                    evidence_graph TEXT,
+                    agent_assessments TEXT,
                     created_at TEXT,
                     updated_at TEXT
                 );
@@ -136,7 +148,12 @@ class Storage:
                     session_id TEXT,
                     run_id INTEGER,
                     agent_id TEXT,
-                    timestamp TEXT,
+                    wall_time TEXT,
+                    monotonic_ns INTEGER,
+                    clock_offset_ms REAL DEFAULT 0.0,
+                    clock_uncertainty_ms REAL DEFAULT 0.0,
+                    sequence_num INTEGER DEFAULT 0,
+                    causal_parent_id TEXT,
                     metric_name TEXT,
                     value TEXT,
                     unit TEXT,
@@ -175,7 +192,7 @@ class Storage:
 
     # --- Session & Peer Operations ---
 
-    def ensure_session(self, session_id: str, name: str = "FEAR 3 Co-Op Investigation") -> None:
+    def ensure_session(self, session_id: str, name: str = "Empirical Investigation") -> None:
         with self._get_connection() as conn:
             conn.execute(
                 """
@@ -191,8 +208,8 @@ class Storage:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO peers 
-                (agent_id, session_id, role, endpoint_url, machine_name, capabilities, joined_at, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (agent_id, session_id, role, endpoint_url, machine_name, capabilities, clock_offset_ms, clock_uncertainty_ms, joined_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     peer.agent_id,
@@ -201,6 +218,8 @@ class Storage:
                     peer.endpoint_url,
                     peer.machine_name,
                     json.dumps(peer.capabilities),
+                    peer.clock_offset_ms,
+                    peer.clock_uncertainty_ms,
                     peer.joined_at,
                     json.dumps(peer.metadata),
                 ),
@@ -212,10 +231,12 @@ class Storage:
             return [
                 AgentPeer(
                     agent_id=row["agent_id"],
-                    role=row["role"],
+                    role=AgentRole(row["role"]),
                     endpoint_url=row["endpoint_url"],
                     machine_name=row["machine_name"],
                     capabilities=json.loads(row["capabilities"] or "[]"),
+                    clock_offset_ms=row["clock_offset_ms"] or 0.0,
+                    clock_uncertainty_ms=row["clock_uncertainty_ms"] or 0.0,
                     joined_at=row["joined_at"],
                     metadata=json.loads(row["metadata"] or "{}"),
                 )
@@ -230,16 +251,19 @@ class Storage:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO messages
-                (message_id, session_id, conversation_id, sender_id, recipient_id, timestamp, action, natural_language, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (message_id, session_id, conversation_id, sender_id, origin_sender_id, recipient_id, timestamp, monotonic_ns, hops, action, natural_language, payload)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     msg.message_id,
                     msg.session_id,
                     msg.conversation_id,
                     msg.sender_id,
+                    msg.origin_sender_id or msg.sender_id,
                     msg.recipient_id,
                     msg.timestamp,
+                    msg.monotonic_ns,
+                    msg.hops,
                     msg.action.value if hasattr(msg.action, "value") else str(msg.action),
                     msg.natural_language,
                     json.dumps(msg.payload),
@@ -249,7 +273,7 @@ class Storage:
     def get_messages(self, session_id: str = "default", limit: int = 100) -> List[MessageEnvelope]:
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?",
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC, monotonic_ns ASC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
             return [
@@ -258,8 +282,11 @@ class Storage:
                     session_id=row["session_id"],
                     conversation_id=row["conversation_id"],
                     sender_id=row["sender_id"],
+                    origin_sender_id=row["origin_sender_id"],
                     recipient_id=row["recipient_id"],
                     timestamp=row["timestamp"],
+                    monotonic_ns=row["monotonic_ns"] or 0,
+                    hops=row["hops"] or 0,
                     action=row["action"],
                     natural_language=row["natural_language"],
                     payload=json.loads(row["payload"] or "{}"),
@@ -267,16 +294,19 @@ class Storage:
                 for row in rows
             ]
 
-    # --- Hypotheses ---
+    # --- Hypotheses & Evidence Graph ---
 
     def save_hypothesis(self, hyp: Hypothesis) -> None:
         self.ensure_session(hyp.session_id)
+        ev_graph_data = [item.model_dump() for item in hyp.evidence_graph]
+        assessments_data = {k: v.model_dump() for k, v in hyp.agent_assessments.items()}
+
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO hypotheses
-                (id, session_id, title, description, creator, status, confidence, evidence_for, evidence_against, supporting_run_ids, contradicting_run_ids, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, session_id, title, description, creator, status, parent_hypothesis_id, confidence, evidence_graph, agent_assessments, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     hyp.id,
@@ -285,11 +315,10 @@ class Storage:
                     hyp.description,
                     hyp.creator,
                     hyp.status.value if hasattr(hyp.status, "value") else str(hyp.status),
+                    hyp.parent_hypothesis_id,
                     hyp.confidence,
-                    json.dumps(hyp.evidence_for),
-                    json.dumps(hyp.evidence_against),
-                    json.dumps(hyp.supporting_run_ids),
-                    json.dumps(hyp.contradicting_run_ids),
+                    json.dumps(ev_graph_data),
+                    json.dumps(assessments_data),
                     hyp.created_at,
                     hyp.updated_at,
                 ),
@@ -301,30 +330,43 @@ class Storage:
                 "SELECT * FROM hypotheses WHERE session_id = ? ORDER BY created_at ASC",
                 (session_id,),
             ).fetchall()
-            return [
-                Hypothesis(
-                    id=row["id"],
-                    session_id=row["session_id"],
-                    title=row["title"],
-                    description=row["description"],
-                    creator=row["creator"],
-                    status=HypothesisStatus(row["status"]),
-                    confidence=row["confidence"],
-                    evidence_for=json.loads(row["evidence_for"] or "[]"),
-                    evidence_against=json.loads(row["evidence_against"] or "[]"),
-                    supporting_run_ids=json.loads(row["supporting_run_ids"] or "[]"),
-                    contradicting_run_ids=json.loads(row["contradicting_run_ids"] or "[]"),
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
+            hyps = []
+            for row in rows:
+                ev_raw = json.loads(row["evidence_graph"] or "[]")
+                ev_graph = [EvidenceItem(**item) for item in ev_raw]
+
+                ass_raw = json.loads(row["agent_assessments"] or "{}")
+                assessments = {k: AgentAssessment(**v) for k, v in ass_raw.items()}
+
+                hyps.append(
+                    Hypothesis(
+                        id=row["id"],
+                        session_id=row["session_id"],
+                        title=row["title"],
+                        description=row["description"],
+                        creator=row["creator"],
+                        status=HypothesisStatus(row["status"]),
+                        parent_hypothesis_id=row["parent_hypothesis_id"],
+                        confidence=row["confidence"],
+                        evidence_graph=ev_graph,
+                        agent_assessments=assessments,
+                        created_at=row["created_at"],
+                        updated_at=row["updated_at"],
+                    )
                 )
-                for row in rows
-            ]
+            return hyps
 
     def get_hypothesis(self, hyp_id: str) -> Optional[Hypothesis]:
         with self._get_connection() as conn:
             row = conn.execute("SELECT * FROM hypotheses WHERE id = ?", (hyp_id,)).fetchone()
             if not row:
                 return None
+            ev_raw = json.loads(row["evidence_graph"] or "[]")
+            ev_graph = [EvidenceItem(**item) for item in ev_raw]
+
+            ass_raw = json.loads(row["agent_assessments"] or "{}")
+            assessments = {k: AgentAssessment(**v) for k, v in ass_raw.items()}
+
             return Hypothesis(
                 id=row["id"],
                 session_id=row["session_id"],
@@ -332,11 +374,10 @@ class Storage:
                 description=row["description"],
                 creator=row["creator"],
                 status=HypothesisStatus(row["status"]),
+                parent_hypothesis_id=row["parent_hypothesis_id"],
                 confidence=row["confidence"],
-                evidence_for=json.loads(row["evidence_for"] or "[]"),
-                evidence_against=json.loads(row["evidence_against"] or "[]"),
-                supporting_run_ids=json.loads(row["supporting_run_ids"] or "[]"),
-                contradicting_run_ids=json.loads(row["contradicting_run_ids"] or "[]"),
+                evidence_graph=ev_graph,
+                agent_assessments=assessments,
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
             )
@@ -495,15 +536,20 @@ class Storage:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO observations
-                (id, session_id, run_id, agent_id, timestamp, metric_name, value, unit, tags, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, session_id, run_id, agent_id, wall_time, monotonic_ns, clock_offset_ms, clock_uncertainty_ms, sequence_num, causal_parent_id, metric_name, value, unit, tags, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     obs.id,
                     obs.session_id,
                     obs.run_id,
                     obs.agent_id,
-                    obs.timestamp,
+                    obs.wall_time,
+                    obs.monotonic_ns,
+                    obs.clock_offset_ms,
+                    obs.clock_uncertainty_ms,
+                    obs.sequence_num,
+                    obs.causal_parent_id,
                     obs.metric_name,
                     json.dumps(obs.value),
                     obs.unit,
@@ -516,12 +562,12 @@ class Storage:
         with self._get_connection() as conn:
             if run_id is not None:
                 rows = conn.execute(
-                    "SELECT * FROM observations WHERE session_id = ? AND run_id = ? ORDER BY timestamp ASC",
+                    "SELECT * FROM observations WHERE session_id = ? AND run_id = ? ORDER BY monotonic_ns ASC, wall_time ASC",
                     (session_id, run_id),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM observations WHERE session_id = ? ORDER BY timestamp ASC",
+                    "SELECT * FROM observations WHERE session_id = ? ORDER BY monotonic_ns ASC, wall_time ASC",
                     (session_id,),
                 ).fetchall()
             return [
@@ -530,7 +576,12 @@ class Storage:
                     session_id=row["session_id"],
                     run_id=row["run_id"],
                     agent_id=row["agent_id"],
-                    timestamp=row["timestamp"],
+                    wall_time=row["wall_time"],
+                    monotonic_ns=row["monotonic_ns"] or 0,
+                    clock_offset_ms=row["clock_offset_ms"] or 0.0,
+                    clock_uncertainty_ms=row["clock_uncertainty_ms"] or 0.0,
+                    sequence_num=row["sequence_num"] or 0,
+                    causal_parent_id=row["causal_parent_id"],
                     metric_name=row["metric_name"],
                     value=json.loads(row["value"]) if row["value"] is not None else None,
                     unit=row["unit"],
@@ -540,7 +591,7 @@ class Storage:
                 for row in rows
             ]
 
-    # --- Instrumentation Requests ---
+    # --- Instrumentation Requests & Artifacts ---
 
     def save_instrumentation_request(self, req: InstrumentationRequest) -> None:
         self.ensure_session(req.session_id)
@@ -590,8 +641,6 @@ class Storage:
                 )
                 for row in rows
             ]
-
-    # --- Artifacts ---
 
     def save_artifact(self, art: ArtifactPayload) -> None:
         self.ensure_session(art.session_id)
