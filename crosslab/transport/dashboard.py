@@ -154,12 +154,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 return;
             }
             container.innerHTML = msgs.map(m => {
-                const isHost = m.sender_id.includes('host');
-                const badgeColor = isHost ? 'bg-blue-900/50 text-blue-300 border-blue-700' : 'bg-purple-900/50 text-purple-300 border-purple-700';
+                const sid = m.sender_id.toLowerCase();
+                let badgeLabel = m.sender_id;
+                let badgeColor = 'bg-gray-800 text-gray-300 border-gray-700';
+
+                if (sid.includes('human') || sid.includes('operator')) {
+                    if (sid.includes('host')) {
+                        badgeLabel = '👤 Human (Host)';
+                        badgeColor = 'bg-emerald-900/60 text-emerald-300 border-emerald-600';
+                    } else if (sid.includes('client')) {
+                        badgeLabel = '👤 Human (Client)';
+                        badgeColor = 'bg-amber-900/60 text-amber-300 border-amber-600';
+                    } else {
+                        badgeLabel = '👤 Human Operator';
+                        badgeColor = 'bg-emerald-900/60 text-emerald-300 border-emerald-600';
+                    }
+                } else if (sid.includes('host')) {
+                    badgeLabel = '🤖 Agent A (Host)';
+                    badgeColor = 'bg-blue-900/50 text-blue-300 border-blue-700';
+                } else if (sid.includes('client')) {
+                    badgeLabel = '🤖 Agent B (Client)';
+                    badgeColor = 'bg-purple-900/50 text-purple-300 border-purple-700';
+                }
+
                 return `
                     <div class="p-2.5 rounded bg-gray-900/80 border border-gray-800 space-y-1">
                         <div class="flex justify-between items-center text-[10px] text-gray-400">
-                            <span class="font-semibold px-1.5 py-0.5 rounded border ${badgeColor}">${m.sender_id}</span>
+                            <span class="font-semibold px-1.5 py-0.5 rounded border ${badgeColor}">${badgeLabel}</span>
                             <span>${m.timestamp ? m.timestamp.split('T')[1]?.slice(0, 8) : ''}</span>
                         </div>
                         <div class="text-gray-200 mt-1">${m.natural_language || JSON.stringify(m.payload)}</div>
@@ -267,11 +288,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const text = input.value.trim();
             if (!text) return;
             input.value = '';
+            const role = document.getElementById('agent-role').textContent || 'host';
             await fetch(`${baseUrl}/v1/a2a/messages`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    sender_id: document.getElementById('agent-id').textContent || 'operator',
+                    sender_id: `human-${role}`,
                     action: 'chat',
                     natural_language: text,
                     relay: true
