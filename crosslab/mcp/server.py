@@ -420,13 +420,39 @@ class CrossLabMCPServer:
 
         return {"error": f"Tool '{name}' not found"}
 
-    def handle_json_rpc(self, request_str: str) -> str:
+    def handle_json_rpc(self, request_str: str) -> Optional[str]:
         try:
             req = json.loads(request_str)
             method = req.get("method")
             msg_id = req.get("id")
 
-            if method == "tools/list":
+            if method == "initialize":
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {
+                            "tools": {
+                                "listChanged": False
+                            }
+                        },
+                        "serverInfo": {
+                            "name": "crosslab-mcp-server",
+                            "version": "0.2.0"
+                        }
+                    }
+                })
+            elif method in ("notifications/initialized", "initialized"):
+                # Standard MCP notification confirming client initialization
+                return None
+            elif method == "ping":
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {}
+                })
+            elif method == "tools/list":
                 return json.dumps({
                     "jsonrpc": "2.0",
                     "id": msg_id,
@@ -443,6 +469,8 @@ class CrossLabMCPServer:
                     "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]},
                 })
             else:
+                if msg_id is None:
+                    return None  # Notification
                 return json.dumps({
                     "jsonrpc": "2.0",
                     "id": msg_id,
@@ -475,7 +503,8 @@ def main() -> None:
         if not line.strip():
             continue
         response = server.handle_json_rpc(line.strip())
-        print(response, flush=True)
+        if response is not None:
+            print(response, flush=True)
 
 
 if __name__ == "__main__":

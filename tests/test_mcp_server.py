@@ -22,10 +22,27 @@ def test_mcp_tool_definitions() -> None:
 
 def test_mcp_json_rpc_tools_list() -> None:
     server = CrossLabMCPServer()
-    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+
+    # 1. Initialize
+    init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}})
+    init_resp = json.loads(server.handle_json_rpc(init_req))
+    assert init_resp["id"] == 1
+    assert init_resp["result"]["protocolVersion"] == "2024-11-05"
+
+    # 2. Notification initialized
+    notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    assert server.handle_json_rpc(notif) is None
+
+    # 3. Ping
+    ping_req = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+    ping_resp = json.loads(server.handle_json_rpc(ping_req))
+    assert ping_resp["id"] == 2
+
+    # 4. Tools list
+    req = json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
     resp_str = server.handle_json_rpc(req)
     resp = json.loads(resp_str)
-    assert resp["id"] == 1
+    assert resp["id"] == 3
     assert "tools" in resp["result"]
     assert len(resp["result"]["tools"]) >= 7
 

@@ -381,15 +381,101 @@ class A2ANode:
 
     async def _connect_peer_loop(self, peer_url: str) -> None:
         await asyncio.sleep(0.2)
-        retries = 5
+        retries = 10
         for attempt in range(retries):
             try:
                 await self.connect_to_peer(peer_url)
                 logger.info(f"[{self.agent_id}] Successfully established handshake with initial peer {peer_url}")
+                # Start persistent outbound SSE stream so NATed client receives all host events
+                sse_task = asyncio.create_task(self._subscribe_peer_events_loop(peer_url))
+                self._bg_tasks.append(sse_task)
                 break
             except Exception as e:
                 logger.debug(f"Handshake attempt {attempt+1}/{retries} to {peer_url} failed: {e}")
                 await asyncio.sleep(1.0)
+
+    async def _subscribe_peer_events_loop(self, peer_url: str) -> None:
+        """Continuously streams events from remote peer over outbound HTTP SSE, enabling NAT traversal."""
+        logger.info(f"[{self.agent_id}] Starting outbound SSE subscriber to peer {peer_url}")
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=None) as client:
+                    async with client.stream("GET", f"{peer_url.rstrip('/')}/v1/a2a/events") as response:
+                        async for line in response.aiter_lines():
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data_str = line[6:].strip()
+                            try:
+                                event = json.loads(data_str)
+                                ev_type = event.get("event")
+                                if ev_type == "message":
+                                    envelope_data = event.get("envelope")
+                                    if envelope_data:
+                                        envelope = MessageEnvelope(**envelope_data)
+                                        if envelope.message_id not in self._seen_message_ids:
+                                            self._seen_message_ids.add(envelope.message_id)
+                                            self.session.record_message(envelope)
+                                            logger.info(f"[{self.agent_id}] Ingested message {envelope.message_id} from peer SSE: {envelope.action.value}")
+                                            # Broadcast to local subscribers
+                                            await self._broadcast_event({
+                                                "event": "message",
+                                                "envelope": envelope.model_dump(),
+                                            })
+                                            # Trigger action handlers
+                                            for handler in self._action_handlers.get(envelope.action, []):
+                                                try:
+                                                    res = handler(envelope)
+                                                    if asyncio.iscoroutine(res):
+                                                        asyncio.create_task(res)
+                                                except Exception as e:
+                                                    logger.error(f"Error in action handler: {e}")
+
+                                elif ev_type == "hypothesis_proposed":
+                                    hyp_data = event.get("hypothesis")
+                                    if hyp_data:
+                                        hyp = Hypothesis(**hyp_data)
+                                        self.session.storage.save_hypothesis(hyp)
+                                        await self._broadcast_event(event)
+
+                                elif ev_type == "experiment_proposed":
+                                    exp_data = event.get("experiment")
+                                    if exp_data:
+                                        exp = Experiment(**exp_data)
+                                        self.session.storage.save_experiment(exp)
+                                        await self._broadcast_event(event)
+
+                                elif ev_type == "sync_signal":
+                                    sig_data = event.get("signal")
+                                    if sig_data:
+                                        sig = SyncRunSignal(**sig_data)
+                                        await self._broadcast_event(event)
+
+                                elif ev_type == "run_recorded":
+                                    run_data = event.get("run")
+                                    if run_data:
+                                        run = RunRecord(**run_data)
+                                        self.session.record_run(run)
+                                        await self._broadcast_event(event)
+
+                                elif ev_type == "observation_added":
+                                    obs_data = event.get("observation")
+                                    if obs_data:
+                                        obs = Observation(**obs_data)
+                                        self.session.storage.save_observation(obs)
+                                        await self._broadcast_event(event)
+
+                                elif ev_type == "artifact_shared":
+                                    art_data = event.get("artifact")
+                                    if art_data:
+                                        art = ArtifactPayload(**art_data)
+                                        self.session.storage.save_artifact(art)
+                                        await self._broadcast_event(event)
+
+                            except Exception as e:
+                                logger.debug(f"Error parsing incoming peer SSE event: {e}")
+            except Exception as e:
+                logger.debug(f"Peer SSE connection to {peer_url} dropped: {e}. Reconnecting in 3s...")
+                await asyncio.sleep(3.0)
 
     async def _periodic_heartbeat_loop(self) -> None:
         while True:
