@@ -242,6 +242,18 @@ class A2ANode:
 
         @app.get("/v1/a2a/messages", response_model=List[MessageEnvelope])
         async def get_messages(limit: int = 100) -> List[MessageEnvelope]:
+            if self.initial_peer_url and self.role != AgentRole.HOST:
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        resp = await client.get(f"{self.initial_peer_url.rstrip('/')}/v1/a2a/messages?limit={limit}")
+                        if resp.status_code == 200:
+                            for m_data in resp.json():
+                                env = MessageEnvelope(**m_data)
+                                if env.message_id not in self._seen_message_ids:
+                                    self._seen_message_ids.add(env.message_id)
+                                    self.session.record_message(env)
+                except Exception:
+                    pass
             return self.session.get_messages(limit=limit)
 
         @app.get("/v1/a2a/events")
@@ -317,6 +329,16 @@ class A2ANode:
 
         @app.get("/v1/a2a/hypotheses", response_model=List[Hypothesis])
         async def get_hypotheses() -> List[Hypothesis]:
+            if self.initial_peer_url and self.role != AgentRole.HOST:
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        resp = await client.get(f"{self.initial_peer_url.rstrip('/')}/v1/a2a/hypotheses")
+                        if resp.status_code == 200:
+                            for h_data in resp.json():
+                                hyp = Hypothesis(**h_data)
+                                self.session.storage.save_hypothesis(hyp)
+                except Exception:
+                    pass
             return self.session.get_hypotheses()
 
         @app.post("/v1/a2a/experiments", response_model=Experiment)
@@ -331,6 +353,16 @@ class A2ANode:
 
         @app.get("/v1/a2a/experiments", response_model=List[Experiment])
         async def get_experiments() -> List[Experiment]:
+            if self.initial_peer_url and self.role != AgentRole.HOST:
+                try:
+                    async with httpx.AsyncClient(timeout=3.0) as client:
+                        resp = await client.get(f"{self.initial_peer_url.rstrip('/')}/v1/a2a/experiments")
+                        if resp.status_code == 200:
+                            for e_data in resp.json():
+                                exp = Experiment(**e_data)
+                                self.session.storage.save_experiment(exp)
+                except Exception:
+                    pass
             return self.session.get_experiments()
 
         @app.post("/v1/a2a/observations", response_model=Observation)
