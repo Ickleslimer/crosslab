@@ -449,8 +449,9 @@ class A2ANode:
 
     async def _connect_peer_loop(self, peer_url: str) -> None:
         await asyncio.sleep(0.2)
-        retries = 10
-        for attempt in range(retries):
+        delay = 1.0
+        attempt = 1
+        while True:
             try:
                 await self.connect_to_peer(peer_url)
                 logger.info(f"[{self.agent_id}] Successfully established handshake with initial peer {peer_url}")
@@ -459,8 +460,10 @@ class A2ANode:
                 self._bg_tasks.append(sse_task)
                 break
             except Exception as e:
-                logger.debug(f"Handshake attempt {attempt+1}/{retries} to {peer_url} failed: {e}")
-                await asyncio.sleep(1.0)
+                logger.debug(f"Handshake attempt {attempt} to {peer_url} failed: {e}. Retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.5, 30.0)
+                attempt += 1
 
     async def _subscribe_peer_events_loop(self, peer_url: str) -> None:
         """Maintains a persistent SSE stream to the peer node for inbound push notifications."""
@@ -573,15 +576,35 @@ class A2ANode:
                         if env.message_id not in self._seen_message_ids:
                             self._seen_message_ids.add(env.message_id)
                             self.session.record_message(env)
+                            # Broadcast to local subscribers and trigger action handlers
+                            await self._broadcast_event({
+                                "event": "message",
+                                "envelope": env.model_dump(),
+                            })
+                            handlers = self._action_handlers.get(env.action, [])
+                            for handler in handlers:
+                                try:
+                                    h_res = handler(env)
+                                    if asyncio.iscoroutine(h_res):
+                                        asyncio.create_task(h_res)
+                                except Exception as err:
+                                    logger.error(f"Error in action handler during reconcile: {err}")
+
                     for h_data in rec.missing_hypotheses:
                         hyp = Hypothesis(**h_data) if isinstance(h_data, dict) else h_data
                         self.session.storage.save_hypothesis(hyp)
+                        await self._broadcast_event({"event": "hypothesis_proposed", "hypothesis": hyp.model_dump()})
+
                     for e_data in rec.missing_experiments:
                         exp = Experiment(**e_data) if isinstance(e_data, dict) else e_data
                         self.session.storage.save_experiment(exp)
+                        await self._broadcast_event({"event": "experiment_proposed", "experiment": exp.model_dump()})
+
                     for r_data in rec.missing_runs:
                         run = RunRecord(**r_data) if isinstance(r_data, dict) else r_data
                         self.session.record_run(run)
+                        await self._broadcast_event({"event": "run_recorded", "run": run.model_dump()})
+
         except Exception as e:
             logger.debug(f"Reconciliation with {peer_url} failed: {e}")
 

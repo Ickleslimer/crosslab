@@ -273,7 +273,11 @@ class Storage:
     def get_messages(self, session_id: str = "default", limit: int = 100) -> List[MessageEnvelope]:
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC, monotonic_ns ASC LIMIT ?",
+                """
+                SELECT * FROM (
+                    SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp DESC, monotonic_ns DESC LIMIT ?
+                ) ORDER BY timestamp ASC, monotonic_ns ASC
+                """,
                 (session_id, limit),
             ).fetchall()
             return [
