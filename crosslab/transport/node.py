@@ -13,7 +13,7 @@ import time
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 import httpx
 
 from crosslab.engine.session import InvestigationSession
@@ -37,6 +37,7 @@ from crosslab.protocol.models import (
     get_monotonic_ns,
     utc_now_iso,
 )
+from crosslab.transport.dashboard import DASHBOARD_HTML
 
 logger = logging.getLogger("crosslab.transport")
 
@@ -134,6 +135,11 @@ class A2ANode:
 
     def _setup_routes(self) -> None:
         app = self.app
+
+        @app.get("/", response_class=HTMLResponse)
+        @app.get("/dashboard", response_class=HTMLResponse)
+        async def dashboard_page() -> HTMLResponse:
+            return HTMLResponse(content=DASHBOARD_HTML)
 
         @app.get("/health")
         async def health() -> Dict[str, Any]:

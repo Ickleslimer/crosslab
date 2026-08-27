@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "crosslab": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "C:\\path\\to\\crosslab",
+        "crosslab",
+        "mcp",
+        "--node-url",
+        "http://127.0.0.1:8765"
+      ]
+    }
+  }
+}

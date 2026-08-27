@@ -1,0 +1,12 @@
+# WinDbg / CDB Breakpoint Script for FEAR 3 Session Watchdog Diagnosis
+# Attach to Fear3.exe:
+#   cdb.exe -pn Fear3.exe -c "$$>< windbg_watchdog_trace.txt"
+
+# 1. Break on Steam socket disconnect error notification
+bu steam_api!SteamAPI_ISteamNetworking_CloseP2PSessionWithUser ".echo [WinDbg] CloseP2PSessionWithUser called; kb; gc"
+
+# 2. Trace timeGetTime / QueryPerformanceCounter polling intervals
+bu kernel32!QueryPerformanceCounter ".echo [WinDbg] QPC sampled; gc"
+
+# 3. Resume execution
+g

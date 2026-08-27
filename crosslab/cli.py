@@ -115,6 +115,11 @@ def main() -> None:
     node_parser.add_argument("--peer", type=str, default=None, help="Remote peer URL to connect to")
     node_parser.add_argument("--db", type=str, default=None, help="SQLite database path")
 
+    # relay
+    relay_parser = subparsers.add_parser("relay", help="Start a central P2P relay hub across NATs/firewalls")
+    relay_parser.add_argument("--host", type=str, default="0.0.0.0", help="Binding host")
+    relay_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
+
     # status
     status_parser = subparsers.add_parser("status", help="Show investigation session summary")
     status_parser.add_argument("--session", type=str, default="default", help="Session ID")
@@ -128,6 +133,9 @@ def main() -> None:
         cmd_mcp(args)
     elif args.command == "node":
         cmd_node(args)
+    elif args.command == "relay":
+        from crosslab.transport.relay import run_relay
+        run_relay(port=args.port, host=args.host)
     elif args.command == "status":
         cmd_status(args)
     else:
