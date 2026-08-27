@@ -97,7 +97,9 @@ class A2ANode:
         # Action Event Handlers
         self._action_handlers: Dict[ActionType, List[Callable[[MessageEnvelope], Any]]] = {}
         # Seen message IDs for deduplication & echo loop prevention
-        self._seen_message_ids: set = set()
+        self._seen_message_ids: set = {
+            message.message_id for message in self.session.get_messages(limit=None)
+        }
         # Background tasks
         self._bg_tasks: List[asyncio.Task] = []
 
@@ -221,7 +223,7 @@ class A2ANode:
             known_exps = set(req.known_experiment_ids)
             known_runs = set(req.known_run_ids)
 
-            all_msgs = self.session.get_messages(limit=500)
+            all_msgs = self.session.get_messages(limit=None)
             all_hyps = self.session.get_hypotheses()
             all_exps = self.session.get_experiments()
             all_runs = self.session.get_runs()
@@ -244,28 +246,8 @@ class A2ANode:
 
         @app.post("/v1/a2a/messages")
         async def receive_message(envelope: MessageEnvelope) -> Dict[str, Any]:
-            if envelope.message_id in self._seen_message_ids:
+            if not await self._ingest_message(envelope):
                 return {"status": "already_processed", "message_id": envelope.message_id}
-
-            self._seen_message_ids.add(envelope.message_id)
-            self.session.record_message(envelope)
-            logger.info(f"[{self.agent_id}] Ingested message {envelope.message_id} from {envelope.sender_id}: {envelope.action.value}")
-
-            # Trigger action handlers
-            handlers = self._action_handlers.get(envelope.action, [])
-            for handler in handlers:
-                try:
-                    res = handler(envelope)
-                    if asyncio.iscoroutine(res):
-                        asyncio.create_task(res)
-                except Exception as e:
-                    logger.error(f"Error in action handler: {e}")
-
-            # Broadcast to local SSE stream
-            await self._broadcast_event({
-                "event": "message",
-                "envelope": envelope.model_dump(),
-            })
 
             # Relay to other remote peers across network if relay requested
             if envelope.relay and envelope.hops < 5:
@@ -285,9 +267,7 @@ class A2ANode:
                         if resp.status_code == 200:
                             for m_data in resp.json():
                                 env = MessageEnvelope(**m_data)
-                                if env.message_id not in self._seen_message_ids:
-                                    self._seen_message_ids.add(env.message_id)
-                                    self.session.record_message(env)
+                                await self._ingest_message(env)
                 except Exception:
                     pass
             return self.session.get_messages(limit=limit)
@@ -440,6 +420,32 @@ class A2ANode:
             except Exception:
                 pass
 
+    async def _ingest_message(self, envelope: MessageEnvelope) -> bool:
+        """Persist and publish one unseen message through every local delivery path."""
+        if envelope.message_id in self._seen_message_ids:
+            return False
+
+        self.session.record_message(envelope)
+        self._seen_message_ids.add(envelope.message_id)
+        logger.info(
+            f"[{self.agent_id}] Ingested message {envelope.message_id} "
+            f"from {envelope.sender_id}: {envelope.action.value}"
+        )
+
+        for handler in self._action_handlers.get(envelope.action, []):
+            try:
+                result = handler(envelope)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+            except Exception as exc:
+                logger.error(f"Error in action handler: {exc}")
+
+        await self._broadcast_event({
+            "event": "message",
+            "envelope": envelope.model_dump(),
+        })
+        return True
+
     def on_action(self, action: ActionType, handler: Callable[[MessageEnvelope], Any]) -> None:
         if action not in self._action_handlers:
             self._action_handlers[action] = []
@@ -449,18 +455,26 @@ class A2ANode:
 
     async def _connect_peer_loop(self, peer_url: str) -> None:
         await asyncio.sleep(0.2)
-        retries = 10
-        for attempt in range(retries):
+        attempt = 0
+        delay = 1.0
+        while True:
             try:
                 await self.connect_to_peer(peer_url)
                 logger.info(f"[{self.agent_id}] Successfully established handshake with initial peer {peer_url}")
                 # Start persistent outbound SSE stream so NATed client receives all host events
                 sse_task = asyncio.create_task(self._subscribe_peer_events_loop(peer_url))
                 self._bg_tasks.append(sse_task)
-                break
+                return
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                logger.debug(f"Handshake attempt {attempt+1}/{retries} to {peer_url} failed: {e}")
-                await asyncio.sleep(1.0)
+                attempt += 1
+                logger.debug(
+                    f"Handshake attempt {attempt} to {peer_url} failed: {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.5, 30.0)
 
     async def _subscribe_peer_events_loop(self, peer_url: str) -> None:
         """Maintains a persistent SSE stream to the peer node for inbound push notifications."""
@@ -494,10 +508,7 @@ class A2ANode:
                                     env_data = event.get("envelope")
                                     if env_data:
                                         env = MessageEnvelope(**env_data)
-                                        if env.message_id not in self._seen_message_ids:
-                                            self._seen_message_ids.add(env.message_id)
-                                            self.session.record_message(env)
-                                            await self._broadcast_event(event)
+                                        await self._ingest_message(env)
 
                                 elif ev_type == "hypothesis_proposed":
                                     hyp_data = event.get("hypothesis")
@@ -550,7 +561,7 @@ class A2ANode:
     async def reconcile_with_peer(self, peer_url: str) -> None:
         """Exchanges ledger hashes/IDs and pulls any missing records from the authoritative peer."""
         try:
-            known_msgs = [m.message_id for m in self.session.get_messages(limit=500)]
+            known_msgs = [m.message_id for m in self.session.get_messages(limit=None)]
             known_hyps = [h.id for h in self.session.get_hypotheses()]
             known_exps = [e.id for e in self.session.get_experiments()]
             known_runs = [r.run_id for r in self.session.get_runs()]
@@ -570,9 +581,7 @@ class A2ANode:
                     rec = ReconcileResponse(**data)
                     for m_data in rec.missing_messages:
                         env = MessageEnvelope(**m_data) if isinstance(m_data, dict) else m_data
-                        if env.message_id not in self._seen_message_ids:
-                            self._seen_message_ids.add(env.message_id)
-                            self.session.record_message(env)
+                        await self._ingest_message(env)
                     for h_data in rec.missing_hypotheses:
                         hyp = Hypothesis(**h_data) if isinstance(h_data, dict) else h_data
                         self.session.storage.save_hypothesis(hyp)

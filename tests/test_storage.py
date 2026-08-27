@@ -40,6 +40,26 @@ def test_storage_peers_and_messages() -> None:
     assert msgs[0].natural_language == "Hello peer"
 
 
+def test_storage_message_limit_returns_latest_in_chronological_order() -> None:
+    storage = Storage(":memory:")
+    for index in range(5):
+        storage.save_message(
+            MessageEnvelope(
+                message_id=f"msg_{index}",
+                session_id="test-session",
+                sender_id="host-agent",
+                timestamp="2026-08-27T00:00:00+00:00",
+                monotonic_ns=index,
+            )
+        )
+
+    assert [m.message_id for m in storage.get_messages("test-session", limit=2)] == [
+        "msg_3",
+        "msg_4",
+    ]
+    assert len(storage.get_messages("test-session", limit=None)) == 5
+
+
 def test_storage_hypotheses_and_experiments() -> None:
     storage = Storage(":memory:")
     hyp = Hypothesis(
