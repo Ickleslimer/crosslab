@@ -1,8 +1,10 @@
 ﻿import json
+import asyncio
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from crosslab.protocol.actions import AgentRole
+from crosslab.protocol.actions import ActionType, AgentRole
 from crosslab.protocol.models import (
     Experiment,
     Hypothesis,
@@ -102,6 +104,84 @@ async def test_reconciliation_endpoint(host_node):
         assert data["missing_messages"][0]["message_id"] == "msg_beta"
         assert len(data["missing_hypotheses"]) == 1
         assert data["missing_hypotheses"][0]["id"] == "hyp_alpha"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_does_not_drop_messages_after_500(host_node):
+    for index in range(501):
+        host_node.session.record_message(
+            MessageEnvelope(
+                message_id=f"msg_{index:03d}",
+                session_id="test-session",
+                sender_id="test-host",
+                timestamp="2026-08-27T00:00:00+00:00",
+                monotonic_ns=index,
+            )
+        )
+
+    transport = ASGITransport(app=host_node.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        req = {
+            "agent_id": "test-client",
+            "session_id": "test-session",
+            "known_message_ids": [f"msg_{index:03d}" for index in range(500)],
+        }
+        res = await client.post("/v1/a2a/sync/reconcile", json=req)
+
+    assert res.status_code == 200
+    assert [m["message_id"] for m in res.json()["missing_messages"]] == ["msg_500"]
+
+
+@pytest.mark.asyncio
+async def test_ingested_message_reaches_handlers_and_local_sse(host_node):
+    handled = []
+    subscriber = asyncio.Queue()
+    host_node._subscribers.append(subscriber)
+    host_node.on_action(ActionType.CHAT, lambda envelope: handled.append(envelope.message_id))
+    message = MessageEnvelope(
+        message_id="msg_delivery",
+        session_id="test-session",
+        sender_id="test-client",
+        action=ActionType.CHAT,
+    )
+
+    assert await host_node._ingest_message(message) is True
+    assert handled == ["msg_delivery"]
+    assert (await subscriber.get())["envelope"]["message_id"] == "msg_delivery"
+
+    assert await host_node._ingest_message(message) is False
+    assert handled == ["msg_delivery"]
+    assert subscriber.empty()
+
+
+@pytest.mark.asyncio
+async def test_restart_seeds_message_deduplication_from_storage(tmp_path):
+    db_path = str(tmp_path / "restart_dedup.db")
+    first_node = A2ANode(
+        agent_id="test-client",
+        role=AgentRole.CLIENT,
+        db_path=db_path,
+        session_id="test-session",
+    )
+    message = MessageEnvelope(
+        message_id="msg_persisted",
+        session_id="test-session",
+        sender_id="test-host",
+        action=ActionType.CHAT,
+    )
+    first_node.session.record_message(message)
+
+    restarted_node = A2ANode(
+        agent_id="test-client",
+        role=AgentRole.CLIENT,
+        db_path=db_path,
+        session_id="test-session",
+    )
+    handled = []
+    restarted_node.on_action(ActionType.CHAT, lambda envelope: handled.append(envelope.message_id))
+
+    assert await restarted_node._ingest_message(message) is False
+    assert handled == []
 
 
 def test_mcp_resources_and_prompts():

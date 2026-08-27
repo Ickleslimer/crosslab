@@ -49,7 +49,7 @@ class InvestigationSession:
         msg.session_id = self.session_id
         self.storage.save_message(msg)
 
-    def get_messages(self, limit: int = 100) -> List[MessageEnvelope]:
+    def get_messages(self, limit: Optional[int] = 100) -> List[MessageEnvelope]:
         return self.storage.get_messages(session_id=self.session_id, limit=limit)
 
     # --- Hypotheses & Evidence Graph ---

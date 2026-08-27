@@ -270,16 +270,24 @@ class Storage:
                 ),
             )
 
-    def get_messages(self, session_id: str = "default", limit: int = 100) -> List[MessageEnvelope]:
+    def get_messages(self, session_id: str = "default", limit: Optional[int] = 100) -> List[MessageEnvelope]:
         with self._get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM (
-                    SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp DESC, monotonic_ns DESC LIMIT ?
-                ) ORDER BY timestamp ASC, monotonic_ns ASC
-                """,
-                (session_id, limit),
-            ).fetchall()
+            if limit is None:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE session_id = ? "
+                    "ORDER BY timestamp ASC, monotonic_ns ASC, message_id ASC",
+                    (session_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM (
+                        SELECT * FROM messages WHERE session_id = ?
+                        ORDER BY timestamp DESC, monotonic_ns DESC, message_id DESC LIMIT ?
+                    ) ORDER BY timestamp ASC, monotonic_ns ASC, message_id ASC
+                    """,
+                    (session_id, limit),
+                ).fetchall()
             return [
                 MessageEnvelope(
                     message_id=row["message_id"],
