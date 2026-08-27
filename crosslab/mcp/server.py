@@ -383,7 +383,7 @@ class CrossLabMCPServer:
             return {"status": "ok", "correlation": corr.model_dump()}
 
         elif name == "crosslab_query_investigation":
-            qtype = arguments["query_type"]
+            qtype = arguments.get("query_type") or arguments.get("query") or "summary"
             if qtype == "summary":
                 return session.get_session_summary()
             elif qtype == "unresolved_hypotheses":
@@ -392,6 +392,9 @@ class CrossLabMCPServer:
             elif qtype == "latest_reproduced":
                 run = session.get_latest_reproducing_run()
                 return {"latest_reproduced_run": run.model_dump() if run else None}
+            elif qtype == "latest_run":
+                runs = session.get_runs()
+                return {"latest_run": runs[-1].model_dump() if runs else None}
             elif qtype == "diff_runs":
                 ra = arguments.get("run_id_a")
                 rb = arguments.get("run_id_b")
@@ -435,11 +438,18 @@ class CrossLabMCPServer:
                         "capabilities": {
                             "tools": {
                                 "listChanged": False
+                            },
+                            "resources": {
+                                "subscribe": False,
+                                "listChanged": False
+                            },
+                            "prompts": {
+                                "listChanged": False
                             }
                         },
                         "serverInfo": {
                             "name": "crosslab-mcp-server",
-                            "version": "0.2.0"
+                            "version": "0.3.0"
                         }
                     }
                 })
@@ -451,6 +461,128 @@ class CrossLabMCPServer:
                     "jsonrpc": "2.0",
                     "id": msg_id,
                     "result": {}
+                })
+            elif method == "resources/list":
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "resources": [
+                            {
+                                "uri": "crosslab://investigation/summary",
+                                "name": "Investigation Summary",
+                                "description": "High-level summary of active investigation session, peers, hypotheses, and runs.",
+                                "mimeType": "application/json"
+                            },
+                            {
+                                "uri": "crosslab://hypotheses/active",
+                                "name": "Active Hypotheses",
+                                "description": "Current empirical hypotheses and their evidence graphs.",
+                                "mimeType": "application/json"
+                            },
+                            {
+                                "uri": "crosslab://runs/latest",
+                                "name": "Latest Test Run",
+                                "description": "Most recent synchronized multi-machine test run telemetry.",
+                                "mimeType": "application/json"
+                            },
+                            {
+                                "uri": "crosslab://ledger/messages",
+                                "name": "A2A Message Ledger",
+                                "description": "Recent Agent-to-Agent message log and reasoning records.",
+                                "mimeType": "application/json"
+                            }
+                        ]
+                    }
+                })
+            elif method == "resources/read":
+                params = req.get("params", {})
+                uri = params.get("uri", "")
+                content_text = "{}"
+                if uri == "crosslab://investigation/summary":
+                    content_text = json.dumps(self.execute_tool("crosslab_query_investigation", {"query": "summary"}), indent=2)
+                elif uri == "crosslab://hypotheses/active":
+                    content_text = json.dumps(self.execute_tool("crosslab_query_investigation", {"query": "hypotheses"}), indent=2)
+                elif uri == "crosslab://runs/latest":
+                    content_text = json.dumps(self.execute_tool("crosslab_query_investigation", {"query": "latest_run"}), indent=2)
+                elif uri == "crosslab://ledger/messages":
+                    if self.client:
+                        try:
+                            res = self.client._get("/v1/a2a/messages?limit=20")
+                            content_text = json.dumps(res, indent=2)
+                        except Exception:
+                            content_text = "[]"
+                    else:
+                        msgs = [m.model_dump() for m in self.local_session.get_messages(limit=20)]
+                        content_text = json.dumps(msgs, indent=2)
+                else:
+                    return json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "error": {"code": -32602, "message": f"Unknown resource URI: {uri}"}
+                    })
+
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "contents": [
+                            {
+                                "uri": uri,
+                                "mimeType": "application/json",
+                                "text": content_text
+                            }
+                        ]
+                    }
+                })
+            elif method == "prompts/list":
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "prompts": [
+                            {
+                                "name": "investigate_fear3_host",
+                                "description": "System guidelines for Host AI Agent debugging FEAR 3 co-op disconnects.",
+                                "arguments": []
+                            },
+                            {
+                                "name": "investigate_fear3_client",
+                                "description": "System guidelines for Client AI Agent debugging FEAR 3 co-op disconnects.",
+                                "arguments": []
+                            }
+                        ]
+                    }
+                })
+            elif method == "prompts/get":
+                params = req.get("params", {})
+                prompt_name = params.get("name", "")
+                if prompt_name == "investigate_fear3_host":
+                    prompt_text = "You are Agent A (Host Investigator) running CrossLab. Trace host-side packet queues, watchdog timers, and coordinate synchronized test runs with Agent B."
+                elif prompt_name == "investigate_fear3_client":
+                    prompt_text = "You are Agent B (Client Investigator) running CrossLab. Trace client-side SendP2PPacket calls, monitor transport return codes, and coordinate with Agent A."
+                else:
+                    return json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": msg_id,
+                        "error": {"code": -32602, "message": f"Unknown prompt name: {prompt_name}"}
+                    })
+
+                return json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "description": f"Prompt for {prompt_name}",
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": {
+                                    "type": "text",
+                                    "text": prompt_text
+                                }
+                            }
+                        ]
+                    }
                 })
             elif method == "tools/list":
                 return json.dumps({

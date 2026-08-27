@@ -66,16 +66,40 @@ class AgentPeer(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+def get_wall_time_ns() -> int:
+    return time.time_ns()
+
+
 class PingRequest(BaseModel):
     agent_id: str
-    t0_send_ns: int = Field(default_factory=get_monotonic_ns)
+    t0_send_mono_ns: int = Field(default_factory=get_monotonic_ns)
+    t0_send_wall_ns: int = Field(default_factory=get_wall_time_ns)
+    t0_send_ns: Optional[int] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.t0_send_ns is not None:
+            self.t0_send_mono_ns = self.t0_send_ns
 
 
 class PongResponse(BaseModel):
     agent_id: str
-    t0_send_ns: int
-    t1_recv_ns: int = Field(default_factory=get_monotonic_ns)
-    t2_send_ns: int = Field(default_factory=get_monotonic_ns)
+    t0_send_mono_ns: int
+    t0_send_wall_ns: int
+    t1_recv_mono_ns: int = Field(default_factory=get_monotonic_ns)
+    t1_recv_wall_ns: int = Field(default_factory=get_wall_time_ns)
+    t2_send_mono_ns: int = Field(default_factory=get_monotonic_ns)
+    t2_send_wall_ns: int = Field(default_factory=get_wall_time_ns)
+    t0_send_ns: Optional[int] = None
+    t1_recv_ns: Optional[int] = None
+    t2_send_ns: Optional[int] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.t0_send_ns is None:
+            self.t0_send_ns = self.t0_send_mono_ns
+        if self.t1_recv_ns is None:
+            self.t1_recv_ns = self.t1_recv_mono_ns
+        if self.t2_send_ns is None:
+            self.t2_send_ns = self.t2_send_mono_ns
 
 
 class HandshakeRequest(BaseModel):
@@ -96,6 +120,24 @@ class HandshakeResponse(BaseModel):
     message: str = "Handshake accepted"
     peers: List[AgentPeer] = Field(default_factory=list)
     agent_card: Optional[AgentCard] = None
+
+
+class ReconcileRequest(BaseModel):
+    agent_id: str
+    session_id: str
+    known_message_ids: List[str] = Field(default_factory=list)
+    known_hypothesis_ids: List[str] = Field(default_factory=list)
+    known_experiment_ids: List[str] = Field(default_factory=list)
+    known_run_ids: List[int] = Field(default_factory=list)
+
+
+class ReconcileResponse(BaseModel):
+    agent_id: str
+    session_id: str
+    missing_messages: List[Any] = Field(default_factory=list)
+    missing_hypotheses: List[Any] = Field(default_factory=list)
+    missing_experiments: List[Any] = Field(default_factory=list)
+    missing_runs: List[Any] = Field(default_factory=list)
 
 
 class MessageEnvelope(BaseModel):

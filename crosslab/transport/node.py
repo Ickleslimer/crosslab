@@ -32,9 +32,12 @@ from crosslab.protocol.models import (
     Observation,
     PingRequest,
     PongResponse,
+    ReconcileRequest,
+    ReconcileResponse,
     RunRecord,
     SyncRunSignal,
     get_monotonic_ns,
+    get_wall_time_ns,
     utc_now_iso,
 )
 from crosslab.transport.dashboard import DASHBOARD_HTML
@@ -195,13 +198,46 @@ class A2ANode:
 
         @app.post("/v1/a2a/ping", response_model=PongResponse)
         async def ping(req: PingRequest) -> PongResponse:
-            t1 = get_monotonic_ns()
-            t2 = get_monotonic_ns()
+            t1_mono = get_monotonic_ns()
+            t1_wall = get_wall_time_ns()
+            t2_mono = get_monotonic_ns()
+            t2_wall = get_wall_time_ns()
             return PongResponse(
                 agent_id=self.agent_id,
-                t0_send_ns=req.t0_send_ns,
-                t1_recv_ns=t1,
-                t2_send_ns=t2,
+                t0_send_mono_ns=req.t0_send_mono_ns,
+                t0_send_wall_ns=req.t0_send_wall_ns,
+                t1_recv_mono_ns=t1_mono,
+                t1_recv_wall_ns=t1_wall,
+                t2_send_mono_ns=t2_mono,
+                t2_send_wall_ns=t2_wall,
+            )
+
+        # --- Synchronization & Reconciliation ---
+
+        @app.post("/v1/a2a/sync/reconcile", response_model=ReconcileResponse)
+        async def reconcile(req: ReconcileRequest) -> ReconcileResponse:
+            known_msgs = set(req.known_message_ids)
+            known_hyps = set(req.known_hypothesis_ids)
+            known_exps = set(req.known_experiment_ids)
+            known_runs = set(req.known_run_ids)
+
+            all_msgs = self.session.get_messages(limit=500)
+            all_hyps = self.session.get_hypotheses()
+            all_exps = self.session.get_experiments()
+            all_runs = self.session.get_runs()
+
+            missing_msgs = [m for m in all_msgs if m.message_id not in known_msgs]
+            missing_hyps = [h for h in all_hyps if h.id not in known_hyps]
+            missing_exps = [e for e in all_exps if e.id not in known_exps]
+            missing_runs = [r for r in all_runs if r.run_id not in known_runs]
+
+            return ReconcileResponse(
+                agent_id=self.agent_id,
+                session_id=self.session_id,
+                missing_messages=missing_msgs,
+                missing_hypotheses=missing_hyps,
+                missing_experiments=missing_exps,
+                missing_runs=missing_runs,
             )
 
         # --- Messaging & Network Relay ---
@@ -427,40 +463,41 @@ class A2ANode:
                 await asyncio.sleep(1.0)
 
     async def _subscribe_peer_events_loop(self, peer_url: str) -> None:
-        """Continuously streams events from remote peer over outbound HTTP SSE, enabling NAT traversal."""
-        logger.info(f"[{self.agent_id}] Starting outbound SSE subscriber to peer {peer_url}")
+        """Maintains a persistent SSE stream to the peer node for inbound push notifications."""
+        delay = 2.0
         while True:
             try:
+                # Reconcile missing ledger items on connect/reconnect
+                await self.reconcile_with_peer(peer_url)
+
+                logger.info(f"Subscribing to remote peer SSE at {peer_url}/v1/a2a/events")
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream("GET", f"{peer_url.rstrip('/')}/v1/a2a/events") as response:
+                        if response.status_code != 200:
+                            logger.debug(f"Peer SSE returned status {response.status_code}")
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 1.5, 30.0)
+                            continue
+
+                        delay = 2.0  # Reset backoff on success
                         async for line in response.aiter_lines():
                             if not line or not line.startswith("data: "):
                                 continue
-                            data_str = line[6:].strip()
+                            raw_data = line[6:].strip()
+                            if not raw_data:
+                                continue
                             try:
-                                event = json.loads(data_str)
+                                event = json.loads(raw_data)
                                 ev_type = event.get("event")
+
                                 if ev_type == "message":
-                                    envelope_data = event.get("envelope")
-                                    if envelope_data:
-                                        envelope = MessageEnvelope(**envelope_data)
-                                        if envelope.message_id not in self._seen_message_ids:
-                                            self._seen_message_ids.add(envelope.message_id)
-                                            self.session.record_message(envelope)
-                                            logger.info(f"[{self.agent_id}] Ingested message {envelope.message_id} from peer SSE: {envelope.action.value}")
-                                            # Broadcast to local subscribers
-                                            await self._broadcast_event({
-                                                "event": "message",
-                                                "envelope": envelope.model_dump(),
-                                            })
-                                            # Trigger action handlers
-                                            for handler in self._action_handlers.get(envelope.action, []):
-                                                try:
-                                                    res = handler(envelope)
-                                                    if asyncio.iscoroutine(res):
-                                                        asyncio.create_task(res)
-                                                except Exception as e:
-                                                    logger.error(f"Error in action handler: {e}")
+                                    env_data = event.get("envelope")
+                                    if env_data:
+                                        env = MessageEnvelope(**env_data)
+                                        if env.message_id not in self._seen_message_ids:
+                                            self._seen_message_ids.add(env.message_id)
+                                            self.session.record_message(env)
+                                            await self._broadcast_event(event)
 
                                 elif ev_type == "hypothesis_proposed":
                                     hyp_data = event.get("hypothesis")
@@ -506,8 +543,47 @@ class A2ANode:
                             except Exception as e:
                                 logger.debug(f"Error parsing incoming peer SSE event: {e}")
             except Exception as e:
-                logger.debug(f"Peer SSE connection to {peer_url} dropped: {e}. Reconnecting in 3s...")
-                await asyncio.sleep(3.0)
+                logger.debug(f"Peer SSE connection to {peer_url} dropped: {e}. Reconnecting in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+                delay = min(delay * 1.5, 30.0)
+
+    async def reconcile_with_peer(self, peer_url: str) -> None:
+        """Exchanges ledger hashes/IDs and pulls any missing records from the authoritative peer."""
+        try:
+            known_msgs = [m.message_id for m in self.session.get_messages(limit=500)]
+            known_hyps = [h.id for h in self.session.get_hypotheses()]
+            known_exps = [e.id for e in self.session.get_experiments()]
+            known_runs = [r.run_id for r in self.session.get_runs()]
+
+            req = ReconcileRequest(
+                agent_id=self.agent_id,
+                session_id=self.session_id,
+                known_message_ids=known_msgs,
+                known_hypothesis_ids=known_hyps,
+                known_experiment_ids=known_exps,
+                known_run_ids=known_runs,
+            )
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(f"{peer_url.rstrip('/')}/v1/a2a/sync/reconcile", json=req.model_dump())
+                if res.status_code == 200:
+                    data = res.json()
+                    rec = ReconcileResponse(**data)
+                    for m_data in rec.missing_messages:
+                        env = MessageEnvelope(**m_data) if isinstance(m_data, dict) else m_data
+                        if env.message_id not in self._seen_message_ids:
+                            self._seen_message_ids.add(env.message_id)
+                            self.session.record_message(env)
+                    for h_data in rec.missing_hypotheses:
+                        hyp = Hypothesis(**h_data) if isinstance(h_data, dict) else h_data
+                        self.session.storage.save_hypothesis(hyp)
+                    for e_data in rec.missing_experiments:
+                        exp = Experiment(**e_data) if isinstance(e_data, dict) else e_data
+                        self.session.storage.save_experiment(exp)
+                    for r_data in rec.missing_runs:
+                        run = RunRecord(**r_data) if isinstance(r_data, dict) else r_data
+                        self.session.record_run(run)
+        except Exception as e:
+            logger.debug(f"Reconciliation with {peer_url} failed: {e}")
 
     async def _periodic_heartbeat_loop(self) -> None:
         while True:
@@ -534,21 +610,21 @@ class A2ANode:
                 session_id=self.session_id,
                 agent_card=self.agent_card,
             )
-            resp = await client.post(f"{peer_url.rstrip('/')}/v1/a2a/handshake", json=req.model_dump())
-            resp.raise_for_status()
-            data = resp.json()
-            response = HandshakeResponse(**data)
+            response_raw = await client.post(f"{peer_url.rstrip('/')}/v1/a2a/handshake", json=req.model_dump())
+            response_raw.raise_for_status()
+            response = HandshakeResponse(**response_raw.json())
 
-            # Register remote peers
-            for p in response.peers:
-                if p.agent_id != self.agent_id:
-                    self.session.register_peer(p)
-
+            # Register remote peer locally
             remote_peer = AgentPeer(
                 agent_id=response.agent_id,
                 role=response.role,
                 endpoint_url=peer_url,
             )
+            # Register remote peers
+            for p in response.peers:
+                if p.agent_id != self.agent_id:
+                    self.session.register_peer(p)
+
             self.session.register_peer(remote_peer)
 
             # Measure initial clock offset
@@ -560,26 +636,23 @@ class A2ANode:
             return response
 
     async def measure_clock_offset(self, peer_url: str) -> Dict[str, float]:
-        """Calculates NTP-style round-trip time and clock offset relative to peer."""
-        t0 = get_monotonic_ns()
+        """Calculates NTP-style round-trip time and UTC clock offset relative to peer."""
+        t0_mono = get_monotonic_ns()
+        t0_wall = get_wall_time_ns()
         async with httpx.AsyncClient(timeout=5.0) as client:
-            ping_req = PingRequest(agent_id=self.agent_id, t0_send_ns=t0)
+            ping_req = PingRequest(agent_id=self.agent_id, t0_send_mono_ns=t0_mono, t0_send_wall_ns=t0_wall)
             res = await client.post(f"{peer_url.rstrip('/')}/v1/a2a/ping", json=ping_req.model_dump())
             res.raise_for_status()
             pong = PongResponse(**res.json())
-            t3 = get_monotonic_ns()
+            t3_mono = get_monotonic_ns()
+            t3_wall = get_wall_time_ns()
 
-            t0_ns = pong.t0_send_ns
-            t1_ns = pong.t1_recv_ns
-            t2_ns = pong.t2_send_ns
-            t3_ns = t3
+            # Monotonic RTT in ms
+            rtt_ns = (t3_mono - pong.t0_send_mono_ns) - (pong.t2_send_mono_ns - pong.t1_recv_mono_ns)
+            rtt_ms = max(0.05, rtt_ns / 1_000_000.0)
 
-            # RTT in ms
-            rtt_ns = (t3_ns - t0_ns) - (t2_ns - t1_ns)
-            rtt_ms = max(0.1, rtt_ns / 1_000_000.0)
-
-            # Offset in ms: ((t1 - t0) + (t2 - t3)) / 2
-            offset_ns = ((t1_ns - t0_ns) + (t2_ns - t3_ns)) / 2.0
+            # True Wall-Clock Offset in ms using Unix Epoch: ((t1_wall - t0_wall) + (t2_wall - t3_wall)) / 2
+            offset_ns = ((pong.t1_recv_wall_ns - pong.t0_send_wall_ns) + (pong.t2_send_wall_ns - t3_wall)) / 2.0
             offset_ms = offset_ns / 1_000_000.0
             uncertainty_ms = rtt_ms / 2.0
 

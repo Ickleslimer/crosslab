@@ -309,3 +309,22 @@ class CrossLabClient:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(f"{self.base_url}/v1/a2a/correlate/{run_id}")
             return CorrelationResult(**res.json())
+
+    async def reconcile_ledger(
+        self,
+        known_message_ids: Optional[List[str]] = None,
+        known_hypothesis_ids: Optional[List[str]] = None,
+        known_experiment_ids: Optional[List[str]] = None,
+        known_run_ids: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "agent_id": self.agent_id,
+            "session_id": "default",
+            "known_message_ids": known_message_ids or [],
+            "known_hypothesis_ids": known_hypothesis_ids or [],
+            "known_experiment_ids": known_experiment_ids or [],
+            "known_run_ids": known_run_ids or [],
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(f"{self.base_url}/v1/a2a/sync/reconcile", json=payload)
+            return res.json()
