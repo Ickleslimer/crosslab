@@ -91,7 +91,15 @@ if (steamApi) {
             },
             onLeave: function(retval) {
                 const success = retval.toInt32() !== 0;
-                console.log(`[Client Probe] ${new Date().toISOString()} SendP2PPacket #${this.pktId} (${this.cubData} bytes, channel=${this.channel}) -> bool: ${success ? "true" : "false"}`);
+                let payloadPreview = "";
+                if (this.channel === 4101 || this.cubData <= 32) {
+                    try {
+                        const bytes = this.pubData.readByteArray(Math.min(this.cubData, 32));
+                        const hex = Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                        payloadPreview = ` hex=[${hex}]`;
+                    } catch(e) {}
+                }
+                console.log(`[Client Probe] ${new Date().toISOString()} SendP2PPacket #${this.pktId} (${this.cubData} bytes, channel=${this.channel})${payloadPreview} -> bool: ${success ? "true" : "false"}`);
             }
         });
         console.log(`  [+] Attached SendP2PPacket hook at ${sendP2P}`);
@@ -126,7 +134,15 @@ if (steamApi) {
                     if (this.pcubMsgSize && !this.pcubMsgSize.isNull()) {
                         messageSize = this.pcubMsgSize.readU32();
                     }
-                    console.log(`[Client Probe] ${new Date().toISOString()} ReadP2PPacket #${recvPacketCounter} (${messageSize} bytes, channel=${this.channel}) -> bool: true`);
+                    let payloadPreview = "";
+                    if (this.channel === 4101 || messageSize <= 32) {
+                        try {
+                            const bytes = this.pubDest.readByteArray(Math.min(messageSize, 32));
+                            const hex = Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                            payloadPreview = ` hex=[${hex}]`;
+                        } catch(e) {}
+                    }
+                    console.log(`[Client Probe] ${new Date().toISOString()} ReadP2PPacket #${recvPacketCounter} (${messageSize} bytes, channel=${this.channel})${payloadPreview} -> bool: true`);
                 }
             }
         });
