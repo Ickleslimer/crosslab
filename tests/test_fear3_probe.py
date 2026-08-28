@@ -11,20 +11,37 @@ PROBE = (
 )
 
 
-def test_run19_filter_is_exact_and_gameplay_gated() -> None:
+def test_run20_is_passive_and_gameplay_gated() -> None:
     source = PROBE.read_text(encoding="utf-8")
 
-    assert "0x50, 0x00, 0x61, 0x64, 0x80, 0x24, 0x01, 0x00" in source
-    assert "0x05, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00, 0x00" in source
+    assert "Run 20 is observational" in source
     assert "this.channel === 4098 && messageSize > 0" in source
-    assert "this.channel === 4101 && messageSize === run19Filter.trigger.length" in source
-    assert "matchesBytes(candidate, run19Filter.trigger)" in source
-    assert "retval.replace(0)" in source
+    assert "Run20Telemetry ACTIVE" in source
+    assert "retval.replace(0)" not in source
+    assert "DROPPED ReadP2PPacket" not in source
 
 
-def test_run19_filter_does_not_match_neighboring_control_frames() -> None:
+def test_run20_traces_auth_ticket_lifecycle_and_callback_results() -> None:
     source = PROBE.read_text(encoding="utf-8")
 
-    assert "trigger: [0x64, 0x01, 0x00, 0x00, 0x00]" not in source
-    assert "Run19Filter DROPPED" in source
-    assert "(16 bytes, channel=4101)" in source
+    assert "GetAuthSessionTicket" in source
+    assert "BeginAuthSession" in source
+    assert "CancelAuthTicket" in source
+    assert 'findExport("SteamAPI_RunCallbacks")' in source
+    assert 'findExport("Steam_BGetCallback")' in source
+    assert "LegacyCallbackDispatchNoTry" in source
+    assert "LegacyCallbackDispatchTryCatch" in source
+    assert "opcode signature mismatch" in source
+    assert "ValidateAuthTicketResponse_t" in source
+    assert "GetAuthSessionTicketResponse_t" in source
+    assert "AuthTicketInvalidAlreadyUsed" in source
+
+
+def test_run20_traces_relevant_dialog_paths() -> None:
+    source = PROBE.read_text(encoding="utf-8")
+
+    assert "DialogText api=" in source
+    assert "DialogLiteralAccess" in source
+    assert '"Failed authentication!"' in source
+    assert '"Kicked by the host"' in source
+    assert '"Connection lost"' in source
