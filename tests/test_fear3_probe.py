@@ -45,3 +45,13 @@ def test_run20_traces_relevant_dialog_paths() -> None:
     assert '"Failed authentication!"' in source
     assert '"Kicked by the host"' in source
     assert '"Connection lost"' in source
+
+
+def test_stack_traces_use_module_relative_addresses_as_authority() -> None:
+    source = PROBE.read_text(encoding="utf-8")
+
+    assert "Process.findModuleByAddress(address)" in source
+    assert "address.sub(owner.base)" in source
+    assert "nearest_symbol_hint=" in source
+    assert ".map(stackFrame)" in source
+    assert ".map(DebugSymbol.fromAddress)" not in source

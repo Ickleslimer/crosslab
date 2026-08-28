@@ -65,10 +65,39 @@ if (steamApi) {
         }
     };
 
+    const stackFrame = function(address) {
+        const rawAddress = address.toString();
+        try {
+            const owner = Process.findModuleByAddress(address);
+            if (!owner) {
+                return `${rawAddress} <no-module>`;
+            }
+
+            // DebugSymbol.fromAddress may return the nearest public export,
+            // even when the address is an unrelated internal method. Keep it
+            // as an explicitly non-authoritative hint and make module+RVA the
+            // stable identity used for cross-machine correlation.
+            let nearestSymbolHint = "";
+            try {
+                const symbol = DebugSymbol.fromAddress(address);
+                if (symbol && symbol.name) {
+                    const symbolModule = symbol.moduleName || "unknown-module";
+                    nearestSymbolHint = ` nearest_symbol_hint=${symbolModule}!${symbol.name}`;
+                }
+            } catch (_) {
+                // Raw address plus module+RVA remains sufficient evidence.
+            }
+
+            return `${rawAddress} ${owner.name}+${address.sub(owner.base)}${nearestSymbolHint}`;
+        } catch (error) {
+            return `${rawAddress} <frame unavailable: ${error}>`;
+        }
+    };
+
     const stackTrace = function(context) {
         try {
             return Thread.backtrace(context, Backtracer.ACCURATE)
-                .map(DebugSymbol.fromAddress)
+                .map(stackFrame)
                 .join(" <- ");
         } catch (error) {
             return `<stack unavailable: ${error}>`;
