@@ -14,6 +14,132 @@ const steamApi = Process.findModuleByName("steam_api.dll") || Process.findModule
 if (steamApi) {
     console.log(`[CrossLab Probe] Found steam_api at ${steamApi.base}`);
 
+    // Run 21 is tied to the exact images reviewed after Run 20.  Refuse to
+    // install any hook when the executable, Steam client, or caller bytes do
+    // not match this manifest.  The probe artifact SHA-256 is verified by the
+    // test/build gate before Frida is launched and is reported with every
+    // candidate; unlike the PE identities it cannot be self-hashed reliably
+    // from inside an already-loaded Frida script.
+    const run21ReviewedManifest = {
+        fear3: {
+            moduleName: "F.E.A.R. 3.exe",
+            sha256: "b9aefdbee81d92296532a17b2032a5731e40026d04026a8194cb9125a6a6c915",
+            peTimestamp: 0x4e0d0b76,
+            sizeOfImage: 0x15e2000
+        },
+        steamclient: {
+            moduleName: "steamclient.dll",
+            sha256: "75de00444dede8c95a94b3c283a0292f33e40005e29c669fd112cbb9d44876d7",
+            peTimestamp: 0x6a70ef0e,
+            sizeOfImage: 0x1498000,
+            closeChannelRva: 0x611960
+        },
+        callerSignatures: [
+            {
+                label: "close_call_window",
+                rva: 0x92406e,
+                bytes: [
+                    0x0f, 0xb7, 0x4f, 0x06, 0x8b, 0x10, 0x8b, 0x52,
+                    0x14, 0x51, 0x8b, 0x4c, 0x24, 0x10, 0x51, 0x8b,
+                    0x4c, 0x24, 0x10, 0x51, 0x8b, 0xc8, 0xff, 0xd2
+                ]
+            },
+            {
+                label: "breadcrumb_indirect_call_window",
+                rva: 0x0187f1,
+                bytes: [0x53, 0x8b, 0x10, 0x8b, 0xc8, 0x8b, 0x42, 0x10, 0xff, 0xd0]
+            },
+            {
+                label: "breadcrumb_relative_call_1",
+                rva: 0x0b12bd,
+                bytes: [0xe8, 0x6e, 0xe7, 0x66, 0x00]
+            },
+            {
+                label: "breadcrumb_relative_call_2",
+                rva: 0x448653,
+                bytes: [0xe8, 0x78, 0xfe, 0xe0, 0xff]
+            }
+        ]
+    };
+
+    const bytesMatch = function(address, expected) {
+        try {
+            const actual = new Uint8Array(address.readByteArray(expected.length));
+            for (let index = 0; index < expected.length; index++) {
+                if (actual[index] !== expected[index]) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const peIdentity = function(module) {
+        const peOffset = module.base.add(0x3c).readU32();
+        const ntHeaders = module.base.add(peOffset);
+        if (ntHeaders.readU32() !== 0x00004550) {
+            throw new Error(`${module.name} has no PE signature`);
+        }
+        return {
+            peTimestamp: ntHeaders.add(8).readU32(),
+            sizeOfImage: ntHeaders.add(0x50).readU32()
+        };
+    };
+
+    const fileSha256 = function(path) {
+        if (typeof File === "undefined" ||
+            typeof File.readAllBytes !== "function" ||
+            typeof Checksum === "undefined" ||
+            typeof Checksum.compute !== "function") {
+            throw new Error("Frida File.readAllBytes/Checksum.compute unavailable");
+        }
+        return Checksum.compute("sha256", File.readAllBytes(path)).toLowerCase();
+    };
+
+    const validateReviewedImage = function(module, expected) {
+        if (!module) {
+            throw new Error(`required module ${expected.moduleName} is not loaded`);
+        }
+        const identity = peIdentity(module);
+        const sha256 = fileSha256(module.path);
+        const mismatches = [];
+        if (module.name.toLowerCase() !== expected.moduleName.toLowerCase()) {
+            mismatches.push(`name=${module.name}`);
+        }
+        if (sha256 !== expected.sha256) {
+            mismatches.push(`sha256=${sha256}`);
+        }
+        if (identity.peTimestamp !== expected.peTimestamp) {
+            mismatches.push(`pe_timestamp=0x${identity.peTimestamp.toString(16)}`);
+        }
+        if (identity.sizeOfImage !== expected.sizeOfImage || module.size !== expected.sizeOfImage) {
+            mismatches.push(`size_of_image=0x${identity.sizeOfImage.toString(16)} module_size=0x${module.size.toString(16)}`);
+        }
+        if (mismatches.length > 0) {
+            throw new Error(`${expected.moduleName} manifest mismatch: ${mismatches.join(" ")}`);
+        }
+        console.log(`[CrossLab Probe] Run21 manifest OK ${module.name} sha256=${sha256} pe_timestamp=0x${identity.peTimestamp.toString(16)} size_of_image=0x${identity.sizeOfImage.toString(16)}`);
+    };
+
+    const run21MainModule = Process.mainModule;
+    const run21SteamClient = Process.findModuleByName("steamclient.dll");
+    try {
+        validateReviewedImage(run21MainModule, run21ReviewedManifest.fear3);
+        validateReviewedImage(run21SteamClient, run21ReviewedManifest.steamclient);
+        for (const signature of run21ReviewedManifest.callerSignatures) {
+            const address = run21MainModule.base.add(signature.rva);
+            if (!bytesMatch(address, signature.bytes)) {
+                throw new Error(`${signature.label} signature mismatch at ${run21MainModule.name}+0x${signature.rva.toString(16)}`);
+            }
+        }
+        console.log("[CrossLab Probe] Run21 caller signature preflight OK; packet mutation remains disabled");
+    } catch (error) {
+        console.log(`[CrossLab Probe] RUN21 PREFLIGHT ABORT: ${error}`);
+        throw error;
+    }
+
     // Run 20 is observational. Packet suppression is deliberately absent:
     // Runs 18 and 19 showed that dropping either candidate control frame only
     // perturbs the authentication failure mode.
@@ -65,10 +191,34 @@ if (steamApi) {
         }
     };
 
+    const stackFrame = function(address) {
+        const rawAddress = address.toString();
+        try {
+            const owner = Process.findModuleByAddress(address);
+            if (!owner) {
+                return `${rawAddress} <no-module>`;
+            }
+
+            // DebugSymbol may select a nearby public export from the wrong
+            // internal routine.  It is deliberately only a hint; raw address
+            // plus owner module and RVA are the authoritative identity.
+            let nearestSymbolHint = "";
+            try {
+                const symbol = DebugSymbol.fromAddress(address);
+                if (symbol && symbol.name) {
+                    nearestSymbolHint = ` nearest_symbol_hint=${symbol.moduleName || "unknown-module"}!${symbol.name}`;
+                }
+            } catch (_) {}
+            return `${rawAddress} ${owner.name}+${address.sub(owner.base)}${nearestSymbolHint}`;
+        } catch (error) {
+            return `${rawAddress} <frame unavailable: ${error}>`;
+        }
+    };
+
     const stackTrace = function(context) {
         try {
             return Thread.backtrace(context, Backtracer.ACCURATE)
-                .map(DebugSymbol.fromAddress)
+                .map(stackFrame)
                 .join(" <- ");
         } catch (error) {
             return `<stack unavailable: ${error}>`;
@@ -109,6 +259,144 @@ if (steamApi) {
                 console.log(`[CrossLab Probe] Using legacy ISteamNetworking vtable at ${vtable}`);
             }
         }
+    }
+
+    const rawRegisterSnapshot = function(context) {
+        const names = Process.pointerSize === 4
+            ? ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"]
+            : ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"];
+        const snapshot = {};
+        for (const name of names) {
+            if (context[name] !== undefined) {
+                snapshot[name] = context[name].toString();
+            }
+        }
+        return snapshot;
+    };
+
+    const rawStackWords = function(context, count) {
+        const words = [];
+        const stackPointer = Process.pointerSize === 4 ? context.esp : context.rsp;
+        if (!stackPointer) {
+            return words;
+        }
+        for (let index = 0; index < count; index++) {
+            try {
+                words.push(stackPointer.add(index * Process.pointerSize).readPointer().toString());
+            } catch (error) {
+                words.push(`<unreadable:${error}>`);
+                break;
+            }
+        }
+        return words;
+    };
+
+    const run21CallerEvidence = {
+        maxAgeMs: 250,
+        maxEventsPerTid: 32,
+        ringsByTid: {},
+        firstCloseCaptured: false
+    };
+
+    const currentTid = function() {
+        return Process.getCurrentThreadId();
+    };
+
+    const trimTidRing = function(tid, nowMs) {
+        const key = tid.toString();
+        const existing = run21CallerEvidence.ringsByTid[key] || [];
+        const recent = existing.filter(event => nowMs - event.wallMs <= run21CallerEvidence.maxAgeMs);
+        if (recent.length > run21CallerEvidence.maxEventsPerTid) {
+            recent.splice(0, recent.length - run21CallerEvidence.maxEventsPerTid);
+        }
+        run21CallerEvidence.ringsByTid[key] = recent;
+        return recent;
+    };
+
+    const recordCallerBreadcrumb = function(callSiteId, callSiteRva, context) {
+        const tid = currentTid();
+        const nowMs = Date.now();
+        const ring = trimTidRing(tid, nowMs);
+        ring.push({
+            call_site_id: callSiteId,
+            module: run21MainModule.name,
+            rva: `0x${callSiteRva.toString(16)}`,
+            tid: tid,
+            wallMs: nowMs,
+            registers: rawRegisterSnapshot(context),
+            stack_words: rawStackWords(context, 8)
+        });
+        if (ring.length > run21CallerEvidence.maxEventsPerTid) {
+            ring.shift();
+        }
+    };
+
+    const sameTidBreadcrumbWindow = function(tid, nowMs) {
+        return trimTidRing(tid, nowMs).map(event => ({
+            call_site_id: event.call_site_id,
+            module: event.module,
+            rva: event.rva,
+            tid: event.tid,
+            age_ms: nowMs - event.wallMs,
+            registers: event.registers,
+            stack_words: event.stack_words
+        }));
+    };
+
+    const separateCrossThreadWindows = function(closeTid, nowMs) {
+        const windows = {};
+        for (const key of Object.keys(run21CallerEvidence.ringsByTid)) {
+            if (key === closeTid.toString()) {
+                continue;
+            }
+            const tid = parseInt(key, 10);
+            const events = trimTidRing(tid, nowMs);
+            if (events.length > 0) {
+                windows[key] = events.map(event => ({
+                    call_site_id: event.call_site_id,
+                    module: event.module,
+                    rva: event.rva,
+                    tid: event.tid,
+                    age_ms: nowMs - event.wallMs
+                }));
+            }
+        }
+        return windows;
+    };
+
+    if (legacyNetworkingVtable && Process.pointerSize === 4) {
+        const closeTarget = legacyNetworkingVtable
+            .add(5 * Process.pointerSize)
+            .readPointer();
+        const owner = Process.findModuleByAddress(closeTarget);
+        if (!owner || owner.name.toLowerCase() !== run21ReviewedManifest.steamclient.moduleName.toLowerCase()) {
+            throw new Error(`RUN21 PREFLIGHT ABORT: CloseP2PChannelWithUser target ${closeTarget} owner=${owner ? owner.name : "none"}`);
+        }
+        const closeTargetRva = closeTarget.sub(owner.base).toUInt32();
+        if (closeTargetRva !== run21ReviewedManifest.steamclient.closeChannelRva) {
+            throw new Error(`RUN21 PREFLIGHT ABORT: CloseP2PChannelWithUser target ${owner.name}+0x${closeTargetRva.toString(16)} expected +0x${run21ReviewedManifest.steamclient.closeChannelRva.toString(16)}`);
+        }
+        console.log(`[CrossLab Probe] Run21 live-owner preflight OK target=${closeTarget} authority=${owner.name}+0x${closeTargetRva.toString(16)} nearest_symbol_hint=disabled_for_acceptance`);
+
+        const callerHooks = [
+            { id: "fear3_close_call_924084", rva: 0x924084 },
+            { id: "fear3_breadcrumb_indirect_0187f9", rva: 0x0187f9 },
+            { id: "fear3_breadcrumb_relative_0b12bd", rva: 0x0b12bd },
+            { id: "fear3_breadcrumb_relative_448653", rva: 0x448653 }
+        ];
+        for (const hook of callerHooks) {
+            safeAttach(
+                run21MainModule.base.add(hook.rva),
+                `Run21 caller ${hook.id}`,
+                {
+                    onEnter: function() {
+                        recordCallerBreadcrumb(hook.id, hook.rva, this.context);
+                    }
+                }
+            );
+        }
+    } else {
+        throw new Error("RUN21 PREFLIGHT ABORT: reviewed x86 legacy ISteamNetworking vtable unavailable");
     }
 
     // Hook SteamNetworking005 / ISteamNetworking::SendP2PPacket
@@ -253,9 +541,31 @@ if (steamApi) {
 
         Interceptor.attach(sessionSlots[5], {
             onEnter: function(args) {
-                const remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
+                const nowMs = Date.now();
+                const tid = currentTid();
+                const remoteLow = args[0].toUInt32();
+                const remoteHigh = args[1].toUInt32();
                 const channel = args[2].toInt32();
-                console.log(`[Client Probe] ${new Date().toISOString()} CloseP2PChannelWithUser remote=${remote} channel=${channel} ${lastSentSummary()} stack=${stackTrace(this.context)}`);
+                const evidence = {
+                    event: "Run21CloseP2PChannelEvidence",
+                    first_close: !run21CallerEvidence.firstCloseCaptured,
+                    timestamp: new Date(nowMs).toISOString(),
+                    tid: tid,
+                    remote: steamIdKey(remoteLow, remoteHigh),
+                    raw_arguments: {
+                        steam_id_low: `0x${remoteLow.toString(16).padStart(8, "0")}`,
+                        steam_id_high: `0x${remoteHigh.toString(16).padStart(8, "0")}`,
+                        channel_bits: `0x${(channel >>> 0).toString(16).padStart(8, "0")}`
+                    },
+                    registers: rawRegisterSnapshot(this.context),
+                    stack_words: rawStackWords(this.context, 8),
+                    same_tid_breadcrumbs: sameTidBreadcrumbWindow(tid, nowMs),
+                    cross_thread_breadcrumbs_separate: separateCrossThreadWindows(tid, nowMs),
+                    authoritative_stack: stackTrace(this.context),
+                    last_sent_packet: lastSentSummary()
+                };
+                run21CallerEvidence.firstCloseCaptured = true;
+                console.log(`[Client Probe] ${JSON.stringify(evidence)}`);
             }
         });
 
@@ -297,6 +607,84 @@ if (steamApi) {
 
         console.log(`  [+] Attached legacy session hooks: Accept=${sessionSlots[3]} Close=${sessionSlots[4]} CloseChannel=${sessionSlots[5]} GetState=${sessionSlots[6]} AllowRelay=${sessionSlots[7]}`);
     }
+
+    // Optional falsification hooks for the two exact steamclient exports that
+    // DebugSymbol previously confused with the internal close target.  Their
+    // ABI is unrecovered: capture raw machine state only.  In particular, do
+    // not dereference arguments or interpret return/null bits as an interface,
+    // string, pointer, or boolean.
+    const attachRawOptionalExport = function(exportName) {
+        const address = run21SteamClient.findExportByName(exportName);
+        if (!address) {
+            console.log(`  [-] Optional exact export unavailable: ${exportName}`);
+            return;
+        }
+        const owner = Process.findModuleByAddress(address);
+        const authority = owner
+            ? `${owner.name}+${address.sub(owner.base)}`
+            : "<no-module>";
+        let windowStartMs = Date.now();
+        let windowCount = 0;
+        let totalCount = 0;
+        let detached = false;
+        let listener = null;
+        listener = Interceptor.attach(address, {
+            onEnter: function() {
+                const nowMs = Date.now();
+                if (nowMs - windowStartMs >= 1000) {
+                    windowStartMs = nowMs;
+                    windowCount = 0;
+                }
+                windowCount++;
+                totalCount++;
+                if (windowCount > 1000) {
+                    if (!detached) {
+                        detached = true;
+                        console.log(`[Client Probe] Run21OptionalExport ABORT export=${exportName} reason=rate_over_1000_per_s total=${totalCount}`);
+                        setImmediate(function() {
+                            listener.detach();
+                        });
+                    }
+                    return;
+                }
+                this.run21RawExport = {
+                    event: "Run21OptionalExportRaw",
+                    phase: "enter",
+                    timestamp: new Date(nowMs).toISOString(),
+                    export: exportName,
+                    exact_address: address.toString(),
+                    authority: authority,
+                    entry_count: totalCount,
+                    tid: currentTid(),
+                    registers: rawRegisterSnapshot(this.context),
+                    stack_words: rawStackWords(this.context, 8),
+                    abi_decoding: "unrecovered_raw_bits_only"
+                };
+                console.log(`[Client Probe] ${JSON.stringify(this.run21RawExport)}`);
+            },
+            onLeave: function(retval) {
+                if (!this.run21RawExport || detached) {
+                    return;
+                }
+                console.log(`[Client Probe] ${JSON.stringify({
+                    event: "Run21OptionalExportRaw",
+                    phase: "leave",
+                    timestamp: new Date().toISOString(),
+                    export: exportName,
+                    exact_address: address.toString(),
+                    authority: authority,
+                    entry_count: this.run21RawExport.entry_count,
+                    tid: this.run21RawExport.tid,
+                    raw_retval_bits: retval.toString(),
+                    abi_decoding: "unrecovered_raw_bits_only"
+                })}`);
+            }
+        });
+        console.log(`  [+] Attached raw-only optional export ${exportName} at ${address} authority=${authority}`);
+    };
+
+    attachRawOptionalExport("Steam_NotifyMissingInterface");
+    attachRawOptionalExport("Steam_IsKnownInterface");
 
     // The 2011-era ISteamUser interface used by FEAR 3 exposes auth-ticket
     // lifecycle methods in vtable slots 13-16. These calls reveal whether the
