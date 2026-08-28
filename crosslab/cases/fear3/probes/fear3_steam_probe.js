@@ -118,6 +118,54 @@ if (steamApi) {
     } else {
         console.log("  [-] Could not resolve ReadP2PPacket");
     }
+
+    // Hook session lifecycle methods on legacy ISteamNetworking vtable
+    if (legacyVtable) {
+        const networkingFactory = findExport("SteamNetworking");
+        if (networkingFactory) {
+            const getNetworking = new NativeFunction(networkingFactory, "pointer", []);
+            const networking = getNetworking();
+            if (!networking.isNull()) {
+                const vtable = networking.readPointer();
+                
+                // Slot 3: AcceptP2PSessionWithUser
+                const acceptP2P = vtable.add(3 * Process.pointerSize).readPointer();
+                if (acceptP2P) {
+                    Interceptor.attach(acceptP2P, {
+                        onEnter: function(args) {
+                            console.log(`[CrossLab Probe] ${new Date().toISOString()} AcceptP2PSessionWithUser() called from ${this.returnAddress}`);
+                        }
+                    });
+                    console.log(`  [+] Attached AcceptP2PSessionWithUser hook at ${acceptP2P}`);
+                }
+
+                // Slot 4: CloseP2PSessionWithUser
+                const closeP2P = vtable.add(4 * Process.pointerSize).readPointer();
+                if (closeP2P) {
+                    Interceptor.attach(closeP2P, {
+                        onEnter: function(args) {
+                            console.log(`[CrossLab TEARDOWN] ${new Date().toISOString()} CloseP2PSessionWithUser() called from ${this.returnAddress}`);
+                            const bt = Thread.backtrace(this.context, Backtracer.ACCURATE).map(DebugSymbol.fromAddress).join("\n    ");
+                            console.log(`    Stack trace:\n    ${bt}`);
+                        }
+                    });
+                    console.log(`  [+] Attached CloseP2PSessionWithUser hook at ${closeP2P}`);
+                }
+
+                // Slot 5: CloseP2PChannelWithUser
+                const closeChannel = vtable.add(5 * Process.pointerSize).readPointer();
+                if (closeChannel) {
+                    Interceptor.attach(closeChannel, {
+                        onEnter: function(args) {
+                            const chan = (Process.pointerSize === 4) ? args[2].toInt32() : args[2].toInt32();
+                            console.log(`[CrossLab TEARDOWN] ${new Date().toISOString()} CloseP2PChannelWithUser(channel=${chan}) called from ${this.returnAddress}`);
+                        }
+                    });
+                    console.log(`  [+] Attached CloseP2PChannelWithUser hook at ${closeChannel}`);
+                }
+            }
+        }
+    }
 } else {
     console.log("[CrossLab Probe] steam_api.dll not yet loaded; waiting for module load event.");
 }
