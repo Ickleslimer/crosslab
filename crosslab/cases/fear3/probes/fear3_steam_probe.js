@@ -1,6 +1,6 @@
 /**
  * FEAR 3 Steam P2P Diagnostic Probe (Frida Hook Script)
- * Intercepts SendP2PPacket, ReadP2PPacket, and SteamNetworkingSockets callbacks.
+ * Intercepts packet I/O, legacy P2P session lifecycle, and auth-ticket calls.
  * 
  * Usage:
  *   frida -n "F.E.A.R. 3.exe" -l fear3_steam_probe.js
@@ -26,10 +26,25 @@ if (steamApi) {
         return null;
     };
 
+    const stackTrace = function(context) {
+        try {
+            return Thread.backtrace(context, Backtracer.ACCURATE)
+                .map(DebugSymbol.fromAddress)
+                .join(" <- ");
+        } catch (error) {
+            return `<stack unavailable: ${error}>`;
+        }
+    };
+
+    const steamIdKey = function(low, high) {
+        return `0x${high.toString(16).padStart(8, "0")}${low.toString(16).padStart(8, "0")}`;
+    };
+
     // Newer Steamworks SDKs expose flat wrapper functions. FEAR 3 ships an
     // older 32-bit steam_api.dll that only exports SteamNetworking(), so fall
     // back to ISteamNetworking's vtable (Send=slot 0, Read=slot 2).
     let legacyVtable = false;
+    let legacyNetworkingVtable = null;
     let sendP2P = findExport("SteamAPI_ISteamNetworking_SendP2PPacket");
     let readP2P = findExport("SteamAPI_ISteamNetworking_ReadP2PPacket");
 
@@ -40,6 +55,7 @@ if (steamApi) {
             const networking = getNetworking();
             if (!networking.isNull()) {
                 const vtable = networking.readPointer();
+                legacyNetworkingVtable = vtable;
                 sendP2P = vtable.readPointer();
                 readP2P = vtable.add(2 * Process.pointerSize).readPointer();
                 legacyVtable = true;
@@ -119,51 +135,136 @@ if (steamApi) {
         console.log("  [-] Could not resolve ReadP2PPacket");
     }
 
-    // Hook session lifecycle methods on legacy ISteamNetworking vtable
-    if (legacyVtable) {
-        const networkingFactory = findExport("SteamNetworking");
-        if (networkingFactory) {
-            const getNetworking = new NativeFunction(networkingFactory, "pointer", []);
-            const networking = getNetworking();
-            if (!networking.isNull()) {
-                const vtable = networking.readPointer();
-                
-                // Slot 3: AcceptP2PSessionWithUser
-                const acceptP2P = vtable.add(3 * Process.pointerSize).readPointer();
-                if (acceptP2P) {
-                    Interceptor.attach(acceptP2P, {
-                        onEnter: function(args) {
-                            console.log(`[CrossLab Probe] ${new Date().toISOString()} AcceptP2PSessionWithUser() called from ${this.returnAddress}`);
-                        }
-                    });
-                    console.log(`  [+] Attached AcceptP2PSessionWithUser hook at ${acceptP2P}`);
-                }
+    // FEAR 3 uses the legacy 32-bit ISteamNetworking interface. Trace the
+    // session-management methods that can explain a deterministic teardown:
+    // slots 3-7 are Accept, Close, CloseChannel, GetState, and AllowRelay.
+    if (legacyNetworkingVtable && Process.pointerSize === 4) {
+        const sessionSlots = [];
+        for (let slot = 3; slot <= 7; slot++) {
+            sessionSlots[slot] = legacyNetworkingVtable
+                .add(slot * Process.pointerSize)
+                .readPointer();
+        }
 
-                // Slot 4: CloseP2PSessionWithUser
-                const closeP2P = vtable.add(4 * Process.pointerSize).readPointer();
-                if (closeP2P) {
-                    Interceptor.attach(closeP2P, {
-                        onEnter: function(args) {
-                            console.log(`[CrossLab TEARDOWN] ${new Date().toISOString()} CloseP2PSessionWithUser() called from ${this.returnAddress}`);
-                            const bt = Thread.backtrace(this.context, Backtracer.ACCURATE).map(DebugSymbol.fromAddress).join("\n    ");
-                            console.log(`    Stack trace:\n    ${bt}`);
-                        }
-                    });
-                    console.log(`  [+] Attached CloseP2PSessionWithUser hook at ${closeP2P}`);
-                }
+        Interceptor.attach(sessionSlots[3], {
+            onEnter: function(args) {
+                this.remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
+                this.trace = stackTrace(this.context);
+            },
+            onLeave: function(retval) {
+                console.log(`[Client Probe] ${new Date().toISOString()} AcceptP2PSessionWithUser remote=${this.remote} -> bool=${retval.toInt32() !== 0} stack=${this.trace}`);
+            }
+        });
 
-                // Slot 5: CloseP2PChannelWithUser
-                const closeChannel = vtable.add(5 * Process.pointerSize).readPointer();
-                if (closeChannel) {
-                    Interceptor.attach(closeChannel, {
-                        onEnter: function(args) {
-                            const chan = (Process.pointerSize === 4) ? args[2].toInt32() : args[2].toInt32();
-                            console.log(`[CrossLab TEARDOWN] ${new Date().toISOString()} CloseP2PChannelWithUser(channel=${chan}) called from ${this.returnAddress}`);
-                        }
-                    });
-                    console.log(`  [+] Attached CloseP2PChannelWithUser hook at ${closeChannel}`);
+        Interceptor.attach(sessionSlots[4], {
+            onEnter: function(args) {
+                const remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
+                console.log(`[Client Probe] ${new Date().toISOString()} CloseP2PSessionWithUser remote=${remote} stack=${stackTrace(this.context)}`);
+            }
+        });
+
+        Interceptor.attach(sessionSlots[5], {
+            onEnter: function(args) {
+                const remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
+                const channel = args[2].toInt32();
+                console.log(`[Client Probe] ${new Date().toISOString()} CloseP2PChannelWithUser remote=${remote} channel=${channel} stack=${stackTrace(this.context)}`);
+            }
+        });
+
+        const lastSessionStates = {};
+        Interceptor.attach(sessionSlots[6], {
+            onEnter: function(args) {
+                this.remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
+                this.state = args[2];
+            },
+            onLeave: function(retval) {
+                const success = retval.toInt32() !== 0;
+                let snapshot = `success=${success}`;
+                try {
+                    if (success && this.state && !this.state.isNull()) {
+                        snapshot = [
+                            `active=${this.state.readU8()}`,
+                            `connecting=${this.state.add(1).readU8()}`,
+                            `error=${this.state.add(2).readU8()}`,
+                            `relay=${this.state.add(3).readU8()}`,
+                            `bytesQueued=${this.state.add(4).readS32()}`,
+                            `packetsQueued=${this.state.add(8).readS32()}`
+                        ].join(" ");
+                    }
+                } catch (error) {
+                    snapshot += ` parse_error=${error}`;
+                }
+                if (lastSessionStates[this.remote] !== snapshot) {
+                    lastSessionStates[this.remote] = snapshot;
+                    console.log(`[Client Probe] ${new Date().toISOString()} GetP2PSessionState remote=${this.remote} ${snapshot}`);
                 }
             }
+        });
+
+        Interceptor.attach(sessionSlots[7], {
+            onEnter: function(args) {
+                console.log(`[Client Probe] ${new Date().toISOString()} AllowP2PPacketRelay allow=${args[0].toInt32() !== 0} stack=${stackTrace(this.context)}`);
+            }
+        });
+
+        console.log(`  [+] Attached legacy session hooks: Accept=${sessionSlots[3]} Close=${sessionSlots[4]} CloseChannel=${sessionSlots[5]} GetState=${sessionSlots[6]} AllowRelay=${sessionSlots[7]}`);
+    }
+
+    // The 2011-era ISteamUser interface used by FEAR 3 exposes auth-ticket
+    // lifecycle methods in vtable slots 13-16. These calls reveal whether the
+    // repeatable ~102-second cutoff is driven by ticket cancellation/expiry.
+    const steamUserFactory = findExport("SteamUser");
+    if (steamUserFactory && Process.pointerSize === 4) {
+        const getSteamUser = new NativeFunction(steamUserFactory, "pointer", []);
+        const steamUser = getSteamUser();
+        if (!steamUser.isNull()) {
+            const userVtable = steamUser.readPointer();
+            const authSlots = [];
+            for (let slot = 13; slot <= 16; slot++) {
+                authSlots[slot] = userVtable.add(slot * Process.pointerSize).readPointer();
+            }
+
+            Interceptor.attach(authSlots[13], {
+                onEnter: function(args) {
+                    this.ticketSize = args[2];
+                    this.trace = stackTrace(this.context);
+                },
+                onLeave: function(retval) {
+                    let size = 0;
+                    try {
+                        if (this.ticketSize && !this.ticketSize.isNull()) {
+                            size = this.ticketSize.readU32();
+                        }
+                    } catch (_) {}
+                    console.log(`[Client Probe] ${new Date().toISOString()} GetAuthSessionTicket handle=${retval.toUInt32()} size=${size} stack=${this.trace}`);
+                }
+            });
+
+            Interceptor.attach(authSlots[14], {
+                onEnter: function(args) {
+                    this.ticketBytes = args[1].toUInt32();
+                    this.remote = steamIdKey(args[2].toUInt32(), args[3].toUInt32());
+                    this.trace = stackTrace(this.context);
+                },
+                onLeave: function(retval) {
+                    console.log(`[Client Probe] ${new Date().toISOString()} BeginAuthSession remote=${this.remote} ticketBytes=${this.ticketBytes} result=${retval.toInt32()} stack=${this.trace}`);
+                }
+            });
+
+            Interceptor.attach(authSlots[15], {
+                onEnter: function(args) {
+                    const remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
+                    console.log(`[Client Probe] ${new Date().toISOString()} EndAuthSession remote=${remote} stack=${stackTrace(this.context)}`);
+                }
+            });
+
+            Interceptor.attach(authSlots[16], {
+                onEnter: function(args) {
+                    console.log(`[Client Probe] ${new Date().toISOString()} CancelAuthTicket handle=${args[0].toUInt32()} stack=${stackTrace(this.context)}`);
+                }
+            });
+
+            console.log(`  [+] Attached legacy auth hooks: GetTicket=${authSlots[13]} Begin=${authSlots[14]} End=${authSlots[15]} Cancel=${authSlots[16]}`);
         }
     }
 } else {
