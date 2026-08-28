@@ -116,22 +116,14 @@ if (steamApi) {
             onLeave: function(retval) {
                 const success = retval.toInt32() !== 0;
                 let payloadPreview = "";
-                let isTriggerPacket = false;
                 if (this.channel === 4101 || this.cubData <= 32) {
                     try {
                         const bytes = this.pubData.readByteArray(Math.min(this.cubData, 32));
                         const hex = Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join(' ');
                         payloadPreview = ` hex=[${hex}]`;
-                        if (this.channel === 4101 && this.cubData > 1 && this.pktId > 100) {
-                            isTriggerPacket = true;
-                        }
                     } catch(e) {}
                 }
-                if (isTriggerPacket) {
-                    console.log(`[Client Probe] [FILTER-TRIGGER] ${new Date().toISOString()} SendP2PPacket #${this.pktId} (${this.cubData} bytes, channel=${this.channel})${payloadPreview} -> bool: ${success ? "true" : "false"}`);
-                } else {
-                    console.log(`[Client Probe] ${new Date().toISOString()} SendP2PPacket #${this.pktId} (${this.cubData} bytes, channel=${this.channel})${payloadPreview} -> bool: ${success ? "true" : "false"}`);
-                }
+                console.log(`[Client Probe] ${new Date().toISOString()} SendP2PPacket #${this.pktId} (${this.cubData} bytes, channel=${this.channel})${payloadPreview} -> bool: ${success ? "true" : "false"}`);
             }
         });
         console.log(`  [+] Attached SendP2PPacket hook at ${sendP2P}`);
@@ -194,28 +186,14 @@ if (steamApi) {
 
                     recvPacketCounter++;
                     let payloadPreview = "";
-                    let isFilterMatch = false;
                     if (this.channel === 4101 || messageSize <= 32) {
                         try {
                             const bytes = this.pubDest.readByteArray(Math.min(messageSize, 32));
-                            const arr = Array.from(new Uint8Array(bytes));
-                            const hex = arr.map(b => b.toString(16).padStart(2, '0')).join(' ');
+                            const hex = Array.from(new Uint8Array(bytes)).map(b => b.toString(16).padStart(2, '0')).join(' ');
                             payloadPreview = ` hex=[${hex}]`;
-                            
-                            // Check if this is the spurious teardown sequence during gameplay (after initial handshake)
-                            if (this.channel === 4101 && recvPacketCounter > 100 && messageSize > 1) {
-                                if (arr[0] === 0x64 || (arr[0] === 0x50 && arr[1] === 0x00)) {
-                                    isFilterMatch = true;
-                                }
-                            }
                         } catch(e) {}
                     }
-                    if (isFilterMatch) {
-                        console.log(`[Client Probe] [FILTER-SUPPRESSED] ${new Date().toISOString()} ReadP2PPacket #${recvPacketCounter} (${messageSize} bytes, channel=${this.channel})${payloadPreview} -> DROPPED FOR CLIENT STABILITY`);
-                        retval.replace(ptr(0));
-                    } else {
-                        console.log(`[Client Probe] ${new Date().toISOString()} ReadP2PPacket #${recvPacketCounter} (${messageSize} bytes, channel=${this.channel})${payloadPreview} -> bool: true`);
-                    }
+                    console.log(`[Client Probe] ${new Date().toISOString()} ReadP2PPacket #${recvPacketCounter} (${messageSize} bytes, channel=${this.channel})${payloadPreview} -> bool: true`);
                 }
             }
         });
