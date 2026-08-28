@@ -110,6 +110,10 @@ def test_run21_optional_exports_are_raw_only_and_rate_bounded() -> None:
 
     assert 'attachRawOptionalExport("Steam_NotifyMissingInterface")' in source
     assert 'attachRawOptionalExport("Steam_IsKnownInterface")' in source
+    assert 'findModuleExport("steamclient.dll", exportName)' in source
+    assert "optionalRawExportListeners" in source
+    assert "optional export group disabled safely" in source
+    assert "untrackListener(listener)" in source
     assert "rawRegisterSnapshot" in source
     assert "rawStackWords" in source
     assert "raw_retval_bits" in source
@@ -119,12 +123,64 @@ def test_run21_optional_exports_are_raw_only_and_rate_bounded() -> None:
     assert "retval.replace(" not in source
 
 
-def test_run21_probe_blob_matches_reviewed_candidate() -> None:
+def test_run21_non_function_entry_sites_use_read_only_stalker_callouts() -> None:
+    source = PROBE.read_text(encoding="utf-8")
+
+    assert "Stalker.follow(tid" in source
+    assert "transform: run21StalkerTransform" in source
+    assert "instruction.address.equals(run21InstructionSites.close.address)" in source
+    assert "instruction.address.equals(run21InstructionSites.indirect.address)" in source
+    assert "iterator.putCallout(function(cpuContext)" in source
+    assert "recordCallerBreadcrumb(calloutSite.id, calloutSite.rva, cpuContext)" in source
+    assert "iterator.keep();" in source
+    assert source.count("iterator.keep();") == 1
+    assert "callerHooks" not in source
+    assert "safeAttach(\n                run21MainModule.base.add(hook.rva)" not in source
+    assert "Interceptor.attach(run21InstructionSites.close.address" not in source
+    assert "Interceptor.attach(run21InstructionSites.indirect.address" not in source
+    assert "retval.replace(" not in source
+
+
+def test_run21_stalker_lifecycle_is_minimal_bounded_and_fail_closed() -> None:
+    source = PROBE.read_text(encoding="utf-8")
+
+    assert "maxFollowedThreads: 1" in source
+    assert "maxFollowDurationMs: 180000" in source
+    assert "captureStopped: false" in source
+    assert "run21InstrumentationFailedClosed || run21CallerEvidence.captureStopped" in source
+    assert "unexpected second Stalker thread" in source
+    assert "stopRun21StalkerThread" in source
+    assert "Stalker.unfollow(tid)" in source
+    assert "Stalker.garbageCollect()" in source
+    assert "cleanupRun21Instrumentation" in source
+    assert "RUN21 FAIL-CLOSED CLEANUP" in source
+    assert "requiredAttach" in source
+    assert "required hook failed" in source
+    assert "requiredAttach(\n            run21InstructionSites.stalkerAnchor.address" in source
+    assert 'requiredAttach(sendP2P, "Run21 SendP2PPacket"' in source
+    assert 'requiredAttach(readP2P, "Run21 ReadP2PPacket"' in source
+    assert 'requiredAttach(sessionSlots[5], "Run21 CloseP2PChannelWithUser target"' in source
+    assert "first CloseP2PChannelWithUser captured" in source
+    assert 'stopRun21StalkerThread(tid, "180s hard timeout", true)' in source
+
+
+def test_run21_missing_required_modules_fail_closed() -> None:
+    source = PROBE.read_text(encoding="utf-8")
+
+    assert 'throw new Error("required main module is not available")' in source
+    assert "RUN21 PREFLIGHT ABORT: required steam_api.dll/steam_api64.dll is not loaded" in source
+    assert "throw error;" in source
+    assert "steam_api.dll not yet loaded; waiting" not in source
+
+
+def test_run21_probe_hashes_match_reviewed_candidate() -> None:
     # This is the pre-launch probe-artifact gate.  Runtime PE/signature checks
     # then run before the first Interceptor.attach inside the agent.
     canonical = PROBE.read_text(encoding="utf-8").encode("utf-8")
     git_blob = hashlib.sha1(
         b"blob " + str(len(canonical)).encode("ascii") + b"\0" + canonical
     ).hexdigest()
+    sha256 = hashlib.sha256(canonical).hexdigest()
 
-    assert git_blob == "e6b0dbb63dce7cccca46209eec60234d07fa3703"
+    assert git_blob == "2fadde5a570e57f819b8d35bf8f7b3795a367f2f"
+    assert sha256 == "7e238a633c32b9073364973ac919fac5c17806f0d40bbc67dcfa50f1a43edee6"

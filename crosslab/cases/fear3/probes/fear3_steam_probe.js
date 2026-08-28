@@ -16,10 +16,10 @@ if (steamApi) {
 
     // Run 21 is tied to the exact images reviewed after Run 20.  Refuse to
     // install any hook when the executable, Steam client, or caller bytes do
-    // not match this manifest.  The probe artifact SHA-256 is verified by the
-    // test/build gate before Frida is launched and is reported with every
-    // candidate; unlike the PE identities it cannot be self-hashed reliably
-    // from inside an already-loaded Frida script.
+    // not match this manifest.  The companion pre-launch test pins both the
+    // Git blob SHA-1 and the SHA-256 of canonical LF source bytes; those
+    // identities are reported with every candidate.  They cannot be embedded
+    // here without creating a self-referential hash.
     const run21ReviewedManifest = {
         fear3: {
             moduleName: "F.E.A.R. 3.exe",
@@ -126,6 +126,9 @@ if (steamApi) {
     const run21MainModule = Process.mainModule;
     const run21SteamClient = Process.findModuleByName("steamclient.dll");
     try {
+        if (!run21MainModule) {
+            throw new Error("required main module is not available");
+        }
         validateReviewedImage(run21MainModule, run21ReviewedManifest.fear3);
         validateReviewedImage(run21SteamClient, run21ReviewedManifest.steamclient);
         for (const signature of run21ReviewedManifest.callerSignatures) {
@@ -176,19 +179,87 @@ if (steamApi) {
         return null;
     };
 
+    const run21InstalledListeners = [];
+    const run21StalkerThreads = {};
+    let run21InstrumentationFailedClosed = false;
+
+    const untrackListener = function(listener) {
+        const index = run21InstalledListeners.indexOf(listener);
+        if (index !== -1) {
+            run21InstalledListeners.splice(index, 1);
+        }
+    };
+
+    const trackedAttach = function(address, callbacks) {
+        const listener = Interceptor.attach(address, callbacks);
+        run21InstalledListeners.push(listener);
+        return listener;
+    };
+
+    const stopRun21StalkerThread = function(tid, reason, terminal) {
+        const key = tid.toString();
+        const state = run21StalkerThreads[key];
+        if (!state) {
+            return;
+        }
+        if (state.timeoutId !== null) {
+            clearTimeout(state.timeoutId);
+        }
+        try {
+            Stalker.unfollow(tid);
+        } catch (error) {
+            console.log(`[CrossLab Probe] Run21 Stalker unfollow error tid=${tid} reason=${reason}: ${error}`);
+        }
+        delete run21StalkerThreads[key];
+        if (terminal) {
+            run21CallerEvidence.captureStopped = true;
+        }
+        try {
+            Stalker.garbageCollect();
+        } catch (error) {
+            console.log(`[CrossLab Probe] Run21 Stalker garbage-collect error tid=${tid}: ${error}`);
+        }
+        console.log(`[CrossLab Probe] Run21 Stalker stopped tid=${tid} reason=${reason}`);
+    };
+
+    const cleanupRun21Instrumentation = function(reason) {
+        run21InstrumentationFailedClosed = true;
+        for (const key of Object.keys(run21StalkerThreads)) {
+            stopRun21StalkerThread(parseInt(key, 10), reason, false);
+        }
+        while (run21InstalledListeners.length > 0) {
+            const listener = run21InstalledListeners.pop();
+            try {
+                listener.detach();
+            } catch (error) {
+                console.log(`[CrossLab Probe] Run21 listener cleanup error reason=${reason}: ${error}`);
+            }
+        }
+        console.log(`[CrossLab Probe] RUN21 FAIL-CLOSED CLEANUP complete reason=${reason}`);
+    };
+
     const safeAttach = function(address, label, callbacks) {
         if (!address || address.isNull()) {
             console.log(`  [-] Could not resolve ${label}`);
-            return false;
+            return null;
         }
         try {
-            Interceptor.attach(address, callbacks);
+            const listener = trackedAttach(address, callbacks);
             console.log(`  [+] Attached ${label} at ${address}`);
-            return true;
+            return listener;
         } catch (error) {
             console.log(`  [-] Could not attach ${label} at ${address}: ${error}`);
-            return false;
+            return null;
         }
+    };
+
+    const requiredAttach = function(address, label, callbacks) {
+        const listener = safeAttach(address, label, callbacks);
+        if (!listener) {
+            cleanupRun21Instrumentation(`required hook failed: ${label}`);
+            throw new Error(`RUN21 PREFLIGHT ABORT: required hook failed: ${label}`);
+        }
+        return listener;
     };
 
     const stackFrame = function(address) {
@@ -294,8 +365,34 @@ if (steamApi) {
     const run21CallerEvidence = {
         maxAgeMs: 250,
         maxEventsPerTid: 32,
+        maxFollowedThreads: 1,
+        maxFollowDurationMs: 180000,
         ringsByTid: {},
-        firstCloseCaptured: false
+        firstCloseCaptured: false,
+        captureStopped: false
+    };
+
+    const run21InstructionSites = {
+        close: {
+            id: "fear3_close_call_924084",
+            rva: 0x924084,
+            address: run21MainModule.base.add(0x924084)
+        },
+        indirect: {
+            id: "fear3_breadcrumb_indirect_0187f9",
+            rva: 0x0187f9,
+            address: run21MainModule.base.add(0x0187f9)
+        },
+        relativeInner: {
+            id: "fear3_breadcrumb_relative_0b12bd",
+            rva: 0x0b12bd,
+            address: run21MainModule.base.add(0x0b12bd)
+        },
+        stalkerAnchor: {
+            id: "fear3_breadcrumb_relative_448653",
+            rva: 0x448653,
+            address: run21MainModule.base.add(0x448653)
+        }
     };
 
     const currentTid = function() {
@@ -364,6 +461,109 @@ if (steamApi) {
         return windows;
     };
 
+    const scheduleRun21FailClosed = function(reason) {
+        if (run21InstrumentationFailedClosed) {
+            return;
+        }
+        run21InstrumentationFailedClosed = true;
+        setImmediate(function() {
+            cleanupRun21Instrumentation(reason);
+        });
+    };
+
+    const run21StalkerTransform = function(iterator) {
+        let instruction = iterator.next();
+        while (instruction !== null) {
+            try {
+                let site = null;
+                if (instruction.address.equals(run21InstructionSites.close.address)) {
+                    site = run21InstructionSites.close;
+                } else if (instruction.address.equals(run21InstructionSites.indirect.address)) {
+                    site = run21InstructionSites.indirect;
+                } else if (instruction.address.equals(run21InstructionSites.relativeInner.address)) {
+                    site = run21InstructionSites.relativeInner;
+                }
+                if (site !== null) {
+                    if (typeof iterator.putCallout !== "function") {
+                        throw new Error(`Stalker putCallout unavailable for ${site.id}`);
+                    }
+                    const calloutSite = site;
+                    iterator.putCallout(function(cpuContext) {
+                        // Read-only evidence: never write to cpuContext.  The
+                        // original call instruction is emitted below by the
+                        // unconditional iterator.keep().
+                        recordCallerBreadcrumb(calloutSite.id, calloutSite.rva, cpuContext);
+                    });
+                }
+            } catch (error) {
+                scheduleRun21FailClosed(`Stalker transform failed at ${instruction.address}: ${error}`);
+            }
+
+            // Mandatory for every transformed instruction.  Omitting this
+            // would drop/replace game code, which Run 21 explicitly forbids.
+            try {
+                iterator.keep();
+            } catch (error) {
+                scheduleRun21FailClosed(`Stalker keep failed at ${instruction.address}: ${error}`);
+                throw error;
+            }
+            instruction = iterator.next();
+        }
+    };
+
+    const startRun21StalkerForCurrentThread = function() {
+        if (run21InstrumentationFailedClosed || run21CallerEvidence.captureStopped) {
+            return;
+        }
+        const tid = currentTid();
+        const key = tid.toString();
+        recordCallerBreadcrumb(
+            run21InstructionSites.stalkerAnchor.id,
+            run21InstructionSites.stalkerAnchor.rva,
+            this.context
+        );
+        if (run21StalkerThreads[key]) {
+            return;
+        }
+        if (Object.keys(run21StalkerThreads).length >= run21CallerEvidence.maxFollowedThreads) {
+            scheduleRun21FailClosed(`unexpected second Stalker thread tid=${tid}`);
+            return;
+        }
+        if (typeof Stalker === "undefined" ||
+            typeof Stalker.follow !== "function" ||
+            typeof Stalker.unfollow !== "function" ||
+            typeof Stalker.garbageCollect !== "function") {
+            scheduleRun21FailClosed("required Frida Stalker lifecycle API unavailable");
+            return;
+        }
+
+        run21StalkerThreads[key] = {
+            tid: tid,
+            startedAtMs: Date.now(),
+            timeoutId: null
+        };
+        try {
+            Stalker.follow(tid, {
+                events: {
+                    call: false,
+                    ret: false,
+                    exec: false,
+                    block: false,
+                    compile: false
+                },
+                transform: run21StalkerTransform
+            });
+            run21StalkerThreads[key].timeoutId = setTimeout(function() {
+                stopRun21StalkerThread(tid, "180s hard timeout", true);
+            }, run21CallerEvidence.maxFollowDurationMs);
+            console.log(`[CrossLab Probe] Run21 Stalker following minimum thread set tid=${tid} anchor=${run21InstructionSites.stalkerAnchor.id}`);
+        } catch (error) {
+            delete run21StalkerThreads[key];
+            cleanupRun21Instrumentation(`Stalker.follow failed tid=${tid}: ${error}`);
+            throw error;
+        }
+    };
+
     if (legacyNetworkingVtable && Process.pointerSize === 4) {
         const closeTarget = legacyNetworkingVtable
             .add(5 * Process.pointerSize)
@@ -377,24 +577,11 @@ if (steamApi) {
             throw new Error(`RUN21 PREFLIGHT ABORT: CloseP2PChannelWithUser target ${owner.name}+0x${closeTargetRva.toString(16)} expected +0x${run21ReviewedManifest.steamclient.closeChannelRva.toString(16)}`);
         }
         console.log(`[CrossLab Probe] Run21 live-owner preflight OK target=${closeTarget} authority=${owner.name}+0x${closeTargetRva.toString(16)} nearest_symbol_hint=disabled_for_acceptance`);
-
-        const callerHooks = [
-            { id: "fear3_close_call_924084", rva: 0x924084 },
-            { id: "fear3_breadcrumb_indirect_0187f9", rva: 0x0187f9 },
-            { id: "fear3_breadcrumb_relative_0b12bd", rva: 0x0b12bd },
-            { id: "fear3_breadcrumb_relative_448653", rva: 0x448653 }
-        ];
-        for (const hook of callerHooks) {
-            safeAttach(
-                run21MainModule.base.add(hook.rva),
-                `Run21 caller ${hook.id}`,
-                {
-                    onEnter: function() {
-                        recordCallerBreadcrumb(hook.id, hook.rva, this.context);
-                    }
-                }
-            );
-        }
+        requiredAttach(
+            run21InstructionSites.stalkerAnchor.address,
+            `Run21 Stalker anchor ${run21InstructionSites.stalkerAnchor.id}`,
+            { onEnter: startRun21StalkerForCurrentThread }
+        );
     } else {
         throw new Error("RUN21 PREFLIGHT ABORT: reviewed x86 legacy ISteamNetworking vtable unavailable");
     }
@@ -402,7 +589,7 @@ if (steamApi) {
     // Hook SteamNetworking005 / ISteamNetworking::SendP2PPacket
     if (sendP2P) {
         let sentPacketCounter = 0;
-        Interceptor.attach(sendP2P, {
+        requiredAttach(sendP2P, "Run21 SendP2PPacket", {
             onEnter: function(args) {
                 if (legacyVtable && Process.pointerSize === 4) {
                     // x86 thiscall keeps `this` in ECX. CSteamID occupies the
@@ -455,13 +642,14 @@ if (steamApi) {
         });
         console.log(`  [+] Attached SendP2PPacket hook at ${sendP2P}`);
     } else {
-        console.log("  [-] Could not resolve SendP2PPacket");
+        cleanupRun21Instrumentation("required SendP2PPacket target unresolved");
+        throw new Error("RUN21 PREFLIGHT ABORT: required SendP2PPacket target unresolved");
     }
 
     // Hook SteamNetworking005 / ISteamNetworking::ReadP2PPacket
     if (readP2P) {
         let recvPacketCounter = 0;
-        Interceptor.attach(readP2P, {
+        requiredAttach(readP2P, "Run21 ReadP2PPacket", {
             onEnter: function(args) {
                 if (legacyVtable && Process.pointerSize === 4) {
                     this.pubDest = args[0];
@@ -508,7 +696,8 @@ if (steamApi) {
         });
         console.log(`  [+] Attached ReadP2PPacket hook at ${readP2P}`);
     } else {
-        console.log("  [-] Could not resolve ReadP2PPacket");
+        cleanupRun21Instrumentation("required ReadP2PPacket target unresolved");
+        throw new Error("RUN21 PREFLIGHT ABORT: required ReadP2PPacket target unresolved");
     }
 
     // FEAR 3 uses the legacy 32-bit ISteamNetworking interface. Trace the
@@ -522,7 +711,7 @@ if (steamApi) {
                 .readPointer();
         }
 
-        Interceptor.attach(sessionSlots[3], {
+        trackedAttach(sessionSlots[3], {
             onEnter: function(args) {
                 this.remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
                 this.trace = stackTrace(this.context);
@@ -532,14 +721,14 @@ if (steamApi) {
             }
         });
 
-        Interceptor.attach(sessionSlots[4], {
+        trackedAttach(sessionSlots[4], {
             onEnter: function(args) {
                 const remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
                 console.log(`[Client Probe] ${new Date().toISOString()} CloseP2PSessionWithUser remote=${remote} ${lastSentSummary()} stack=${stackTrace(this.context)}`);
             }
         });
 
-        Interceptor.attach(sessionSlots[5], {
+        requiredAttach(sessionSlots[5], "Run21 CloseP2PChannelWithUser target", {
             onEnter: function(args) {
                 const nowMs = Date.now();
                 const tid = currentTid();
@@ -566,11 +755,14 @@ if (steamApi) {
                 };
                 run21CallerEvidence.firstCloseCaptured = true;
                 console.log(`[Client Probe] ${JSON.stringify(evidence)}`);
+                setImmediate(function() {
+                    stopRun21StalkerThread(tid, "first CloseP2PChannelWithUser captured", true);
+                });
             }
         });
 
         const lastSessionStates = {};
-        Interceptor.attach(sessionSlots[6], {
+        trackedAttach(sessionSlots[6], {
             onEnter: function(args) {
                 this.remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
                 this.state = args[2];
@@ -599,7 +791,7 @@ if (steamApi) {
             }
         });
 
-        Interceptor.attach(sessionSlots[7], {
+        trackedAttach(sessionSlots[7], {
             onEnter: function(args) {
                 console.log(`[Client Probe] ${new Date().toISOString()} AllowP2PPacketRelay allow=${args[0].toInt32() !== 0} stack=${stackTrace(this.context)}`);
             }
@@ -613,13 +805,16 @@ if (steamApi) {
     // ABI is unrecovered: capture raw machine state only.  In particular, do
     // not dereference arguments or interpret return/null bits as an interface,
     // string, pointer, or boolean.
+    const optionalRawExportListeners = [];
     const attachRawOptionalExport = function(exportName) {
-        const address = run21SteamClient.findExportByName(exportName);
-        if (!address) {
-            console.log(`  [-] Optional exact export unavailable: ${exportName}`);
-            return;
+        const address = findModuleExport("steamclient.dll", exportName);
+        if (!address || address.isNull()) {
+            throw new Error(`optional exact export unavailable: ${exportName}`);
         }
         const owner = Process.findModuleByAddress(address);
+        if (!owner || owner.name.toLowerCase() !== "steamclient.dll") {
+            throw new Error(`optional exact export has unexpected owner: ${exportName} owner=${owner ? owner.name : "none"}`);
+        }
         const authority = owner
             ? `${owner.name}+${address.sub(owner.base)}`
             : "<no-module>";
@@ -628,7 +823,7 @@ if (steamApi) {
         let totalCount = 0;
         let detached = false;
         let listener = null;
-        listener = Interceptor.attach(address, {
+        listener = trackedAttach(address, {
             onEnter: function() {
                 const nowMs = Date.now();
                 if (nowMs - windowStartMs >= 1000) {
@@ -642,7 +837,11 @@ if (steamApi) {
                         detached = true;
                         console.log(`[Client Probe] Run21OptionalExport ABORT export=${exportName} reason=rate_over_1000_per_s total=${totalCount}`);
                         setImmediate(function() {
-                            listener.detach();
+                            try {
+                                listener.detach();
+                            } finally {
+                                untrackListener(listener);
+                            }
                         });
                     }
                     return;
@@ -680,11 +879,26 @@ if (steamApi) {
                 })}`);
             }
         });
+        optionalRawExportListeners.push(listener);
         console.log(`  [+] Attached raw-only optional export ${exportName} at ${address} authority=${authority}`);
+        return listener;
     };
 
-    attachRawOptionalExport("Steam_NotifyMissingInterface");
-    attachRawOptionalExport("Steam_IsKnownInterface");
+    try {
+        attachRawOptionalExport("Steam_NotifyMissingInterface");
+        attachRawOptionalExport("Steam_IsKnownInterface");
+    } catch (error) {
+        // These exports are falsification-only.  Disable the entire optional
+        // group if lookup or attachment fails so it can never remain partial.
+        while (optionalRawExportListeners.length > 0) {
+            const listener = optionalRawExportListeners.pop();
+            try {
+                listener.detach();
+            } catch (_) {}
+            untrackListener(listener);
+        }
+        console.log(`[CrossLab Probe] Run21 optional export group disabled safely: ${error}`);
+    }
 
     // The 2011-era ISteamUser interface used by FEAR 3 exposes auth-ticket
     // lifecycle methods in vtable slots 13-16. These calls reveal whether the
@@ -709,7 +923,7 @@ if (steamApi) {
                 authSlots[slot] = userVtable.add(slot * Process.pointerSize).readPointer();
             }
 
-            Interceptor.attach(authSlots[13], {
+            trackedAttach(authSlots[13], {
                 onEnter: function(args) {
                     this.ticketSize = args[2];
                     this.trace = stackTrace(this.context);
@@ -729,7 +943,7 @@ if (steamApi) {
                 }
             });
 
-            Interceptor.attach(authSlots[14], {
+            trackedAttach(authSlots[14], {
                 onEnter: function(args) {
                     this.ticketBytes = args[1].toUInt32();
                     this.remote = steamIdKey(args[2].toUInt32(), args[3].toUInt32());
@@ -742,14 +956,14 @@ if (steamApi) {
                 }
             });
 
-            Interceptor.attach(authSlots[15], {
+            trackedAttach(authSlots[15], {
                 onEnter: function(args) {
                     const remote = steamIdKey(args[0].toUInt32(), args[1].toUInt32());
                     console.log(`[Client Probe] ${new Date().toISOString()} EndAuthSession remote=${remote} stack=${stackTrace(this.context)}`);
                 }
             });
 
-            Interceptor.attach(authSlots[16], {
+            trackedAttach(authSlots[16], {
                 onEnter: function(args) {
                     const handle = args[0].toUInt32();
                     const createdAt = authTicketCreatedAt[handle];
@@ -1122,5 +1336,7 @@ if (steamApi) {
         }
     }
 } else {
-    console.log("[CrossLab Probe] steam_api.dll not yet loaded; waiting for module load event.");
+    const error = new Error("RUN21 PREFLIGHT ABORT: required steam_api.dll/steam_api64.dll is not loaded");
+    console.log(`[CrossLab Probe] ${error.message}`);
+    throw error;
 }
