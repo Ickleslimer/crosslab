@@ -13,6 +13,30 @@ const steamApi = Process.findModuleByName("steam_api.dll") || Process.findModule
 if (steamApi) {
     console.log(`[CrossLab Probe] Found steam_api at ${steamApi.base}`);
 
+    // Run 18 intervention: the exact five-byte channel-4101 frame below
+    // immediately preceded the client-side teardown in Run 17. Do not arm
+    // the filter during lobby negotiation; channel 4098 traffic is our
+    // observable boundary that the replicated gameplay stream has started.
+    // Keep this match exact so neighboring 0x64 messages remain visible.
+    const run18Filter = {
+        enabled: true,
+        armed: false,
+        trigger: [0x64, 0x01, 0x00, 0x00, 0x00]
+    };
+
+    const matchesBytes = function(buffer, expected) {
+        if (!buffer || buffer.byteLength !== expected.length) {
+            return false;
+        }
+        const bytes = new Uint8Array(buffer);
+        for (let index = 0; index < expected.length; index++) {
+            if (bytes[index] !== expected[index]) {
+                return false;
+            }
+        }
+        return true;
+    };
+
     // Frida 17 moved export lookup from the global Module namespace to the
     // Module instance. Keep the fallback so the probe also works on older
     // Frida releases.
@@ -137,11 +161,38 @@ if (steamApi) {
             onLeave: function(retval) {
                 const hasPacket = retval.toInt32() !== 0;
                 if (hasPacket) {
-                    recvPacketCounter++;
                     let messageSize = 0;
                     if (this.pcubMsgSize && !this.pcubMsgSize.isNull()) {
                         messageSize = this.pcubMsgSize.readU32();
                     }
+
+                    if (run18Filter.enabled && !run18Filter.armed &&
+                        this.channel === 4098 && messageSize > 0) {
+                        run18Filter.armed = true;
+                        console.log(`[Client Probe] ${new Date().toISOString()} Run18Filter ARMED after first channel=4098 gameplay packet`);
+                    }
+
+                    if (run18Filter.enabled && run18Filter.armed &&
+                        this.channel === 4101 && messageSize === run18Filter.trigger.length) {
+                        try {
+                            const candidate = this.pubDest.readByteArray(messageSize);
+                            if (matchesBytes(candidate, run18Filter.trigger)) {
+                                recvPacketCounter++;
+                                console.log(`[Client Probe] ${new Date().toISOString()} Run18Filter DROPPED ReadP2PPacket #${recvPacketCounter} (5 bytes, channel=4101) hex=[64 01 00 00 00] -> bool: false`);
+                                if (this.pcubMsgSize && !this.pcubMsgSize.isNull()) {
+                                    this.pcubMsgSize.writeU32(0);
+                                }
+                                // Steam has already dequeued the packet. Returning false
+                                // prevents FEAR 3 from processing this one frame.
+                                retval.replace(0);
+                                return;
+                            }
+                        } catch (error) {
+                            console.log(`[Client Probe] ${new Date().toISOString()} Run18Filter ERROR: ${error}`);
+                        }
+                    }
+
+                    recvPacketCounter++;
                     let payloadPreview = "";
                     let isFilterMatch = false;
                     if (this.channel === 4101 || messageSize <= 32) {
