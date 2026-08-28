@@ -13,15 +13,19 @@ const steamApi = Process.findModuleByName("steam_api.dll") || Process.findModule
 if (steamApi) {
     console.log(`[CrossLab Probe] Found steam_api at ${steamApi.base}`);
 
-    // Run 18 intervention: the exact five-byte channel-4101 frame below
-    // immediately preceded the client-side teardown in Run 17. Do not arm
-    // the filter during lobby negotiation; channel 4098 traffic is our
-    // observable boundary that the replicated gameplay stream has started.
-    // Keep this match exact so neighboring 0x64 messages remain visible.
-    const run18Filter = {
+    // Run 19 intervention: suppress only the exact sixteen-byte channel-4101
+    // frame that immediately triggered client-side teardown in clean Run 18.
+    // The five-byte 0x64 frame and later fifteen-byte 0x50 frame must pass
+    // unchanged so this remains a single-variable causal test. Do not arm the
+    // filter during lobby negotiation; channel 4098 traffic is our observable
+    // boundary that the replicated gameplay stream has started.
+    const run19Filter = {
         enabled: true,
         armed: false,
-        trigger: [0x64, 0x01, 0x00, 0x00, 0x00]
+        trigger: [
+            0x50, 0x00, 0x61, 0x64, 0x80, 0x24, 0x01, 0x00,
+            0x05, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00, 0x00
+        ]
     };
 
     const matchesBytes = function(buffer, expected) {
@@ -158,19 +162,19 @@ if (steamApi) {
                         messageSize = this.pcubMsgSize.readU32();
                     }
 
-                    if (run18Filter.enabled && !run18Filter.armed &&
+                    if (run19Filter.enabled && !run19Filter.armed &&
                         this.channel === 4098 && messageSize > 0) {
-                        run18Filter.armed = true;
-                        console.log(`[Client Probe] ${new Date().toISOString()} Run18Filter ARMED after first channel=4098 gameplay packet`);
+                        run19Filter.armed = true;
+                        console.log(`[Client Probe] ${new Date().toISOString()} Run19Filter ARMED after first channel=4098 gameplay packet`);
                     }
 
-                    if (run18Filter.enabled && run18Filter.armed &&
-                        this.channel === 4101 && messageSize === run18Filter.trigger.length) {
+                    if (run19Filter.enabled && run19Filter.armed &&
+                        this.channel === 4101 && messageSize === run19Filter.trigger.length) {
                         try {
                             const candidate = this.pubDest.readByteArray(messageSize);
-                            if (matchesBytes(candidate, run18Filter.trigger)) {
+                            if (matchesBytes(candidate, run19Filter.trigger)) {
                                 recvPacketCounter++;
-                                console.log(`[Client Probe] ${new Date().toISOString()} Run18Filter DROPPED ReadP2PPacket #${recvPacketCounter} (5 bytes, channel=4101) hex=[64 01 00 00 00] -> bool: false`);
+                                console.log(`[Client Probe] ${new Date().toISOString()} Run19Filter DROPPED ReadP2PPacket #${recvPacketCounter} (16 bytes, channel=4101) hex=[50 00 61 64 80 24 01 00 05 00 00 80 80 00 00 00] -> bool: false`);
                                 if (this.pcubMsgSize && !this.pcubMsgSize.isNull()) {
                                     this.pcubMsgSize.writeU32(0);
                                 }
@@ -180,7 +184,7 @@ if (steamApi) {
                                 return;
                             }
                         } catch (error) {
-                            console.log(`[Client Probe] ${new Date().toISOString()} Run18Filter ERROR: ${error}`);
+                            console.log(`[Client Probe] ${new Date().toISOString()} Run19Filter ERROR: ${error}`);
                         }
                     }
 
