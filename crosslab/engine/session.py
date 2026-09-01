@@ -3,11 +3,13 @@ Investigation Session Manager for CrossLab.
 Coordinates hypotheses with explicit evidence graphs, experiments, runs, and distributed queries.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from crosslab.engine.correlator import CorrelationEngine
 from crosslab.engine.storage import Storage
 from crosslab.protocol.actions import (
+    ActionType,
     EvidenceRelation,
     EvidenceType,
     ExperimentStatus,
@@ -48,6 +50,115 @@ class InvestigationSession:
     def record_message(self, msg: MessageEnvelope) -> None:
         msg.session_id = self.session_id
         self.storage.save_message(msg)
+        self._auto_sync_from_message(msg)
+
+    def _auto_sync_from_message(self, msg: MessageEnvelope) -> None:
+        """
+        Hardening: Automatically synchronizes formal RunRecord, Hypothesis, and Evidence
+        entities when message envelopes contain run coordination or empirical lifecycle signals.
+        """
+        try:
+            text = msg.natural_language or ""
+            payload = msg.payload or {}
+            action = msg.action
+
+            # Extract run_id if present
+            run_id: Optional[int] = None
+            if "run_id" in payload:
+                try:
+                    run_id = int(payload["run_id"])
+                except (ValueError, TypeError):
+                    pass
+            if run_id is None and text:
+                m = re.search(r"(?:START\s+RUN|RUN\s+IN\s+PROGRESS|ABORT\s+RUN|START\s+Run|Run\s*#?|run\s*#?)\s*(\d+)", text, re.IGNORECASE)
+                if m:
+                    try:
+                        run_id = int(m.group(1))
+                    except ValueError:
+                        pass
+
+            if run_id is not None:
+                existing_run = self.get_run(run_id)
+                if not existing_run:
+                    existing_run = RunRecord(
+                        run_id=run_id,
+                        session_id=self.session_id,
+                        build=payload.get("build", "default-build"),
+                        start_time=msg.timestamp,
+                        outcome=RunOutcome.PENDING,
+                        participants=[msg.sender_id] if msg.sender_id else [],
+                        created_at=msg.timestamp,
+                    )
+                else:
+                    if msg.sender_id and msg.sender_id not in existing_run.participants:
+                        existing_run.participants.append(msg.sender_id)
+
+                # Action-specific updates
+                if action in (ActionType.START_RUN, ActionType.SYNC_READY):
+                    existing_run.start_time = existing_run.start_time or msg.timestamp
+                    if existing_run.outcome == RunOutcome.PENDING:
+                        existing_run.outcome = RunOutcome.PENDING
+                    if "commit" in text.lower():
+                        cm = re.search(r"commit\s+([0-9a-fA-F]+)", text, re.IGNORECASE)
+                        if cm:
+                            existing_run.build = f"commit-{cm.group(1)}"
+                    if "exp_" in text:
+                        em = re.search(r"(exp_[0-9a-fA-F]+)", text)
+                        if em:
+                            existing_run.experiment_id = em.group(1)
+                    if "hyp_" in text:
+                        hm = re.search(r"(hyp_[0-9a-fA-F]+)", text)
+                        if hm:
+                            existing_run.hypothesis_id = hm.group(1)
+
+                elif action in (ActionType.ABORT_RUN, ActionType.REPORT_FAILURE):
+                    existing_run.end_time = msg.timestamp
+                    if any(k in text.lower() for k in ("crash", "bex", "exception", "fault")):
+                        existing_run.outcome = RunOutcome.CRASH
+                    else:
+                        existing_run.outcome = RunOutcome.NOT_REPRODUCED
+                    existing_run.result_summary = text
+
+                elif action == ActionType.REPORT_RESULT:
+                    existing_run.end_time = msg.timestamp
+                    if "reproduced" in text.lower() or "reproduce" in text.lower():
+                        existing_run.outcome = RunOutcome.REPRODUCED
+                    elif "success" in text.lower() or "passed" in text.lower():
+                        existing_run.outcome = RunOutcome.SUCCESS
+                    existing_run.result_summary = text
+
+                elif action == ActionType.CHAT:
+                    if re.search(r"RUN\s+\d+\s+REPRODUCED", text, re.IGNORECASE):
+                        existing_run.outcome = RunOutcome.REPRODUCED
+                        existing_run.end_time = msg.timestamp
+                        existing_run.result_summary = text
+                    elif re.search(r"ABORT\s+RUN\s+\d+", text, re.IGNORECASE):
+                        if "crash" in text.lower():
+                            existing_run.outcome = RunOutcome.CRASH
+                        else:
+                            existing_run.outcome = RunOutcome.NOT_REPRODUCED
+                        existing_run.end_time = msg.timestamp
+                        existing_run.result_summary = text
+
+                # Ensure observations are linked
+                existing_obs = self.storage.get_observations(session_id=self.session_id, run_id=run_id)
+                if existing_obs:
+                    existing_run.observations = existing_obs
+
+                self.record_run(existing_run)
+
+            # Hypothesis auto-sync
+            if action == ActionType.PROPOSE_HYPOTHESIS and payload:
+                title = payload.get("title") or payload.get("hypothesis")
+                if title and not self.storage.get_hypothesis(payload.get("id", "")):
+                    self.propose_hypothesis(
+                        title=str(title),
+                        description=payload.get("description", text),
+                        creator=msg.sender_id,
+                        confidence=payload.get("confidence"),
+                    )
+        except Exception:
+            pass
 
     def get_messages(self, limit: Optional[int] = 100) -> List[MessageEnvelope]:
         return self.storage.get_messages(session_id=self.session_id, limit=limit)
@@ -313,6 +424,10 @@ class InvestigationSession:
             notes=notes,
         )
         self.storage.save_observation(obs)
+        run = self.get_run(run_id)
+        if run:
+            run.observations.append(obs)
+            self.record_run(run)
         return obs
 
     def get_observations(self, run_id: Optional[int] = None) -> List[Observation]:

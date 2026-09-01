@@ -1,4 +1,4 @@
-﻿import json
+import json
 import asyncio
 
 import pytest
@@ -244,3 +244,89 @@ def test_mcp_resources_and_prompts():
     }
     get_prompt_res = json.loads(server.handle_json_rpc(json.dumps(get_prompt_req)))
     assert "Agent A" in get_prompt_res["result"]["messages"][0]["content"]["text"]
+
+
+@pytest.mark.asyncio
+async def test_auto_sync_start_and_abort_run_from_messages(host_node):
+    """
+    Verifies that start_run and abort_run message envelopes automatically
+    populate the RunRecord entity in storage and trigger the correlation engine.
+    """
+    # 1. Start run message
+    start_msg = MessageEnvelope(
+        message_id="msg_start_22",
+        session_id="test-session",
+        sender_id="test-host",
+        action=ActionType.START_RUN,
+        natural_language="START RUN 22: Live observation probe attached at commit a1b2c3d",
+        payload={"run_id": 22, "build": "commit-a1b2c3d"},
+    )
+    host_node.session.record_message(start_msg)
+
+    run = host_node.session.get_run(22)
+    assert run is not None
+    assert run.run_id == 22
+    assert run.build == "commit-a1b2c3d"
+    assert "test-host" in run.participants
+
+    # 2. Abort run message
+    abort_msg = MessageEnvelope(
+        message_id="msg_abort_22",
+        session_id="test-session",
+        sender_id="test-client",
+        action=ActionType.ABORT_RUN,
+        natural_language="ABORT RUN 22: Target crash confirmed (BEX 0xc0000409)",
+        payload={"run_id": 22},
+    )
+    host_node.session.record_message(abort_msg)
+
+    run = host_node.session.get_run(22)
+    assert run.outcome.value == "crash"
+    assert "Target crash confirmed" in run.result_summary
+
+
+@pytest.mark.asyncio
+async def test_auto_sync_chat_run_reproduced(host_node):
+    """
+    Verifies that natural language chat messages indicating run reproduction
+    automatically update the RunRecord outcome.
+    """
+    chat_msg = MessageEnvelope(
+        message_id="msg_repro_23",
+        session_id="test-session",
+        sender_id="test-client",
+        action=ActionType.CHAT,
+        natural_language="RUN 23 REPRODUCED: Teardown sequence observed at 00:15:46Z",
+    )
+    host_node.session.record_message(chat_msg)
+
+    run = host_node.session.get_run(23)
+    assert run is not None
+    assert run.outcome.value == "reproduced"
+    assert "Teardown sequence observed" in run.result_summary
+
+
+@pytest.mark.asyncio
+async def test_observation_links_and_updates_run_record(host_node):
+    """
+    Verifies that adding an observation attaches it to the parent RunRecord.
+    """
+    host_node.session.record_run(
+        RunRecord(
+            run_id=24,
+            session_id="test-session",
+            build="test-build",
+        )
+    )
+    obs = host_node.session.add_observation(
+        run_id=24,
+        agent_id="test-client",
+        metric_name="last_sent_packet",
+        value=500,
+    )
+    assert obs.run_id == 24
+
+    run = host_node.session.get_run(24)
+    assert len(run.observations) == 1
+    assert run.observations[0].metric_name == "last_sent_packet"
+
