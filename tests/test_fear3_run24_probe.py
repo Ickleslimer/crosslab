@@ -82,11 +82,12 @@ def test_run24_timer_initialized_before_hook_installation() -> None:
 
 
 def test_run24_probe_hashes_match_reviewed_candidate() -> None:
-    canonical = PROBE_RUN24.read_text(encoding="utf-8").encode("utf-8")
+    raw_bytes = PROBE_RUN24.read_bytes()
+    assert b"\r" not in raw_bytes, "Probe file on disk must be pure LF under .gitattributes"
     git_blob = hashlib.sha1(
-        b"blob " + str(len(canonical)).encode("ascii") + b"\0" + canonical
+        b"blob " + str(len(raw_bytes)).encode("ascii") + b"\0" + raw_bytes
     ).hexdigest()
-    sha256 = hashlib.sha256(canonical).hexdigest()
+    sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
     assert git_blob == "367daeb870c7adb8fb0c43c46a26069278e636af"
     assert sha256 == "cdc95782f6a58b855290593495caed4bf9fa0ff0ac830e5098f20f2f5dfaf600"
