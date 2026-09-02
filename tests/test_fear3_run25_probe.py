@@ -50,12 +50,16 @@ def test_run25_hooks_target_lobby_peer_entry_with_fail_closed_rollback() -> None
     assert "run25InstalledListeners.pop()" in source
 
 
-def test_run25_captures_immediate_args_and_explicit_read_status_telemetry() -> None:
+def test_run25_captures_immediate_args_filters_target_return_site_and_records_explicit_telemetry() -> None:
     source = PROBE_RUN25.read_text(encoding="utf-8")
 
     # Immediate capture of returnAddress, ecx, and args[0] before other operations
     assert "if (run25Finished || run25Captured) {\n            return;\n        }\n        const retAddr = this.returnAddress;\n        const lobbyPeerThis = this.context.ecx;\n        const endpointDescriptorPtr = args[0];" in source
+    assert "const targetReturnAddress = run25MainModule.base.add(0x187fb);" in source
+    assert "if (!retAddr.equals(targetReturnAddress)) {\n            return;\n        }" in source
     assert "if (run25Captured) {\n            return;\n        }\n        run25Captured = true;" in source
+    assert "lobby_peer_fields_read_ok: lobbyPeerFieldsReadOk" in source
+    assert "lobby_peer_fields_read_error: lobbyPeerFieldsReadError" in source
     assert "listener_ptr: listenerPtr" in source
     assert "channel_offset: channelOffset" in source
     assert "descriptor_read_ok: descriptorReadOk" in source
@@ -78,7 +82,7 @@ def test_run25_timer_initialized_before_hook_installation() -> None:
     assert timer_pos < attach_pos, "Timeout guard must be armed before installing the live hook"
     assert "clearTimeout(timeoutGuard)" in source
     assert "timeoutGuard = null" in source
-    assert 'cleanupRun25("LobbyPeer::DisconnectChannel captured")' in source
+    assert 'cleanupRun25("LobbyPeer slot 4 captured from +0x187fb")' in source
     assert "600000" in source
 
 
@@ -90,5 +94,5 @@ def test_run25_probe_hashes_match_reviewed_candidate() -> None:
     ).hexdigest()
     sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
-    assert git_blob == "c35fcf44f4a40659cc652488e4e50e89770f204d"
-    assert sha256 == "790e5fadd38cd117caa4aa40acefac10835b3644e3d73f858dd3b2818c493a93"
+    assert git_blob == "20816b3730cc456e4bb81b478f06474d3c192ce4"
+    assert sha256 == "4577615d1731eca89784359c2fbb60929f748388f249ae173f54e74906fe2265"

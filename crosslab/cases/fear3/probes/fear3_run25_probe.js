@@ -1,7 +1,8 @@
 /**
- * FEAR 3 Steam P2P Diagnostic Probe - Run 25 (Despair::Net::LobbyPeer::DisconnectChannel Entry Evidence)
+ * FEAR 3 Steam P2P Diagnostic Probe - Run 25 (Despair::Net::LobbyPeer Slot 4 Entry Evidence)
  * 
- * Strict entry-only Interceptor instrumentation targeting Despair::Net::LobbyPeer::DisconnectChannel at F.E.A.R. 3.exe+0x38ed80.
+ * Strict entry-only Interceptor instrumentation targeting Despair::Net::LobbyPeer slot 4 (provisional DisconnectChannel) at F.E.A.R. 3.exe+0x38ed80.
+ * Filtered synchronously for return site F.E.A.R. 3.exe+0x187fb to avoid consuming one-shot latch on unrelated calls.
  * Completely eliminates Stalker and mid-function hooks to reduce instrumentation risk.
  * 600-second safety timeout for relaxed lobby reproduction.
  * Line endings: Pinned to LF via repository .gitattributes.
@@ -176,20 +177,23 @@ const stackTrace = function(context, maxFrames) {
     }
 };
 
-// Preflight target function entry: Despair::Net::LobbyPeer::DisconnectChannel (RVA +0x38ed80)
+// Preflight target function entry: Despair::Net::LobbyPeer slot 4 (RVA +0x38ed80)
 const lobbyPeerDisconnectTarget = run25MainModule.base.add(run25ReviewedManifest.fear3.lobbyPeerDisconnectRva);
 if (!bytesMatch(lobbyPeerDisconnectTarget, run25ReviewedManifest.fear3.lobbyPeerDisconnectEntryBytes)) {
-    throw new Error(`RUN25 PREFLIGHT ABORT: Despair::Net::LobbyPeer::DisconnectChannel entry byte signature mismatch at F.E.A.R. 3.exe+0x${run25ReviewedManifest.fear3.lobbyPeerDisconnectRva.toString(16)}`);
+    throw new Error(`RUN25 PREFLIGHT ABORT: Despair::Net::LobbyPeer slot 4 entry byte signature mismatch at F.E.A.R. 3.exe+0x${run25ReviewedManifest.fear3.lobbyPeerDisconnectRva.toString(16)}`);
 }
 console.log(`[CrossLab Probe] Run25 live target preflight OK target=${lobbyPeerDisconnectTarget} authority=F.E.A.R. 3.exe+0x${run25ReviewedManifest.fear3.lobbyPeerDisconnectRva.toString(16)} entry_bytes=OK`);
+
+// Precompute expected target return address from Frame 3: F.E.A.R. 3.exe+0x187fb
+const targetReturnAddress = run25MainModule.base.add(0x187fb);
 
 // Arm the 600s Safety Timeout Guard BEFORE hook installation
 timeoutGuard = setTimeout(function() {
     cleanupRun25("600s safety timeout reached");
 }, 600000);
 
-// Primary Run 25 Hook: Despair::Net::LobbyPeer::DisconnectChannel (RVA +0x38ed80)
-requiredAttach(lobbyPeerDisconnectTarget, "Run25 Despair::Net::LobbyPeer::DisconnectChannel entry target", {
+// Primary Run 25 Hook: Despair::Net::LobbyPeer slot 4 (RVA +0x38ed80)
+requiredAttach(lobbyPeerDisconnectTarget, "Run25 Despair::Net::LobbyPeer slot 4 entry target", {
     onEnter: function(args) {
         if (run25Finished || run25Captured) {
             return;
@@ -197,6 +201,11 @@ requiredAttach(lobbyPeerDisconnectTarget, "Run25 Despair::Net::LobbyPeer::Discon
         const retAddr = this.returnAddress;
         const lobbyPeerThis = this.context.ecx;
         const endpointDescriptorPtr = args[0];
+
+        // Synchronous caller filter: only target the session pump dispatcher return site at +0x187fb
+        if (!retAddr.equals(targetReturnAddress)) {
+            return;
+        }
 
         // Synchronous latch: claim one-shot capture immediately before any async or stack work
         if (run25Captured) {
@@ -214,14 +223,21 @@ requiredAttach(lobbyPeerDisconnectTarget, "Run25 Despair::Net::LobbyPeer::Discon
             retRva = `0x${retAddr.sub(owner.base).toString(16)}`;
         }
 
+        let lobbyPeerFieldsReadOk = false;
+        let lobbyPeerFieldsReadError = null;
         let listenerPtr = "0x0";
         let channelOffset = 0;
         try {
-            if (!lobbyPeerThis.isNull()) {
+            if (!lobbyPeerThis || lobbyPeerThis.isNull()) {
+                lobbyPeerFieldsReadError = "lobby peer pointer is NULL";
+            } else {
                 listenerPtr = lobbyPeerThis.add(0x70).readPointer().toString();
                 channelOffset = lobbyPeerThis.add(0x74).readU16();
+                lobbyPeerFieldsReadOk = true;
             }
-        } catch (_) {}
+        } catch (error) {
+            lobbyPeerFieldsReadError = error ? error.toString() : "unknown read error";
+        }
 
         let descriptorReadOk = false;
         let descriptorReadError = null;
@@ -246,6 +262,8 @@ requiredAttach(lobbyPeerDisconnectTarget, "Run25 Despair::Net::LobbyPeer::Discon
             timestamp: new Date(nowMs).toISOString(),
             tid: tid,
             lobby_peer_this: lobbyPeerThis.toString(),
+            lobby_peer_fields_read_ok: lobbyPeerFieldsReadOk,
+            lobby_peer_fields_read_error: lobbyPeerFieldsReadError,
             listener_ptr: listenerPtr,
             channel_offset: channelOffset,
             endpoint_descriptor_ptr: endpointDescriptorPtr ? endpointDescriptorPtr.toString() : "0x0",
@@ -265,12 +283,12 @@ requiredAttach(lobbyPeerDisconnectTarget, "Run25 Despair::Net::LobbyPeer::Discon
         };
 
         console.log(`[Client Probe] ${JSON.stringify(evidence)}`);
-        console.log("[Client Probe] Despair::Net::LobbyPeer::DisconnectChannel entry detected. Detaching Run 25 probe.");
+        console.log("[Client Probe] Despair::Net::LobbyPeer slot 4 entry from +0x187fb detected. Detaching Run 25 probe.");
 
         setImmediate(function() {
-            cleanupRun25("LobbyPeer::DisconnectChannel captured");
+            cleanupRun25("LobbyPeer slot 4 captured from +0x187fb");
         });
     }
 });
 
-console.log("[CrossLab Probe] Run 25 probe attached successfully. Waiting for LobbyPeer::DisconnectChannel event...");
+console.log("[CrossLab Probe] Run 25 probe attached successfully. Waiting for LobbyPeer slot 4 event from +0x187fb...");
