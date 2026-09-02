@@ -27,6 +27,7 @@ build/
 *.sqlite
 *.sqlite3
 transcripts/
+docs/friction-study/
 
 # Local investigation scratch & run artifacts
 scratch_*.py
