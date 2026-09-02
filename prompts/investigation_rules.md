@@ -14,3 +14,6 @@ These rules guide all autonomous coding agents collaborating across machines via
 4. **Time & Sequence Precision**:
    - Always record sequence numbers (`packet_id`, `frame_seq`) and high-resolution monotonic timestamps.
    - Allow for clock uncertainty ($\pm \Delta t$) when correlating timestamps across distributed networks.
+5. **Post-Run Record Closure**:
+   - Immediately upon concluding analysis of a test run, update the run record in storage with its final outcome (`reproduced`, `success`, `timeout`, `crash`, etc.) and a concise `result_summary` of the findings.
+   - Never leave completed test runs in `pending` status once evidence evaluation is finished.
