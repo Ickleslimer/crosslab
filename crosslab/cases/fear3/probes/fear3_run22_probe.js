@@ -29,7 +29,25 @@ const run22ReviewedManifest = {
         sha256: "75de00444dede8c95a94b3c283a0292f33e40005e29c669fd112cbb9d44876d7",
         peTimestamp: 0x6a70ef0e,
         sizeOfImage: 0x1498000,
-        closeChannelRva: 0x611960
+        closeChannelRva: 0x611960,
+        closeChannelEntryBytes: [
+            0x55, 0x8b, 0xec, 0x8b, 0x49, 0x04, 0xff, 0x75,
+            0x10, 0xff, 0x75, 0x0c, 0x8b, 0x01, 0xff, 0x75
+        ]
+    }
+};
+
+const bytesMatch = function(address, expected) {
+    try {
+        const actual = new Uint8Array(address.readByteArray(expected.length));
+        for (let index = 0; index < expected.length; index++) {
+            if (actual[index] !== expected[index]) {
+                return false;
+            }
+        }
+        return true;
+    } catch (_) {
+        return false;
     }
 };
 
@@ -96,22 +114,17 @@ try {
 
 const run22InstalledListeners = [];
 let run22Finished = false;
-
-const untrackListener = function(listener) {
-    const index = run22InstalledListeners.indexOf(listener);
-    if (index !== -1) {
-        run22InstalledListeners.splice(index, 1);
-    }
-};
-
-const trackedAttach = function(address, callbacks) {
-    const listener = Interceptor.attach(address, callbacks);
-    run22InstalledListeners.push(listener);
-    return listener;
-};
+let timeoutGuard = null;
 
 const cleanupRun22 = function(reason) {
+    if (run22Finished) {
+        return;
+    }
     run22Finished = true;
+    if (timeoutGuard !== null) {
+        clearTimeout(timeoutGuard);
+        timeoutGuard = null;
+    }
     while (run22InstalledListeners.length > 0) {
         const listener = run22InstalledListeners.pop();
         try {
@@ -119,6 +132,22 @@ const cleanupRun22 = function(reason) {
         } catch (_) {}
     }
     console.log(`[CrossLab Probe] Run22 detached all hooks (reason: ${reason})`);
+};
+
+const requiredAttach = function(address, label, callbacks) {
+    if (!address || address.isNull()) {
+        cleanupRun22(`cannot resolve ${label}`);
+        throw new Error(`RUN22 PREFLIGHT ABORT: cannot resolve ${label}`);
+    }
+    try {
+        const listener = Interceptor.attach(address, callbacks);
+        run22InstalledListeners.push(listener);
+        console.log(`  [+] Attached ${label} at ${address}`);
+        return listener;
+    } catch (error) {
+        cleanupRun22(`required hook failed: ${label}`);
+        throw new Error(`RUN22 PREFLIGHT ABORT: required hook failed: ${label}: ${error}`);
+    }
 };
 
 const findExport = function(name) {
@@ -184,15 +213,27 @@ const closeTargetRva = closeChannelTarget.sub(closeOwner.base).toUInt32();
 if (closeTargetRva !== run22ReviewedManifest.steamclient.closeChannelRva) {
     throw new Error(`RUN22 PREFLIGHT ABORT: CloseP2PChannelWithUser target ${closeOwner.name}+0x${closeTargetRva.toString(16)} expected +0x${run22ReviewedManifest.steamclient.closeChannelRva.toString(16)}`);
 }
-console.log(`[CrossLab Probe] Run22 live-owner preflight OK target=${closeChannelTarget} authority=${closeOwner.name}+0x${closeTargetRva.toString(16)}`);
+if (!bytesMatch(closeChannelTarget, run22ReviewedManifest.steamclient.closeChannelEntryBytes)) {
+    throw new Error(`RUN22 PREFLIGHT ABORT: CloseP2PChannelWithUser entry byte signature mismatch at ${closeOwner.name}+0x${closeTargetRva.toString(16)}`);
+}
+console.log(`[CrossLab Probe] Run22 live-owner preflight OK target=${closeChannelTarget} authority=${closeOwner.name}+0x${closeTargetRva.toString(16)} entry_bytes=OK`);
 
 // Primary Run 22 Hook: CloseP2PChannelWithUser (Slot 5)
-trackedAttach(closeChannelTarget, {
+requiredAttach(closeChannelTarget, "Run22 CloseP2PChannelWithUser target", {
     onEnter: function(args) {
-        if (run22Finished) return;
+        if (run22Finished) {
+            return;
+        }
+        const retAddr = this.returnAddress;
+        const channel = args[2].toInt32();
+
+        // Narrow filter: only channel 4101 carries the control burst triggering teardown
+        if (channel !== 4101) {
+            return;
+        }
+
         const nowMs = Date.now();
         const tid = Process.getCurrentThreadId();
-        const retAddr = this.returnAddress;
         let retModule = "<no-module>";
         let retRva = "0x0";
         const owner = Process.findModuleByAddress(retAddr);
@@ -203,7 +244,6 @@ trackedAttach(closeChannelTarget, {
 
         const remoteLow = args[0].toUInt32();
         const remoteHigh = args[1].toUInt32();
-        const channel = args[2].toInt32();
 
         const evidence = {
             event: "Run22CloseP2PChannelEvidence",
@@ -220,39 +260,17 @@ trackedAttach(closeChannelTarget, {
         };
 
         console.log(`[Client Probe] ${JSON.stringify(evidence)}`);
+        console.log("[Client Probe] Control channel 4101 close detected. Detaching Run 22 probe.");
 
-        // If channel 4101 (control channel) is closed, capture once and cleanly detach
-        if (channel === 4101) {
-            console.log("[Client Probe] Control channel 4101 close detected. Detaching Run 22 probe.");
-            setImmediate(function() {
-                cleanupRun22("control channel 4101 captured");
-            });
-        }
+        setImmediate(function() {
+            cleanupRun22("control channel 4101 captured");
+        });
     }
 });
 
-// Secondary sparse hook: CloseP2PSessionWithUser (Slot 4)
-const closeSessionTarget = legacyNetworkingVtable.add(4 * Process.pointerSize).readPointer();
-trackedAttach(closeSessionTarget, {
-    onEnter: function(args) {
-        if (run22Finished) return;
-        const retAddr = this.returnAddress;
-        let retModule = "<no-module>";
-        let retRva = "0x0";
-        const owner = Process.findModuleByAddress(retAddr);
-        if (owner) {
-            retModule = owner.name;
-            retRva = `0x${retAddr.sub(owner.base).toString(16)}`;
-        }
-        const remoteLow = args[0].toUInt32();
-        const remoteHigh = args[1].toUInt32();
-        console.log(`[Client Probe] ${new Date().toISOString()} CloseP2PSessionWithUser remote=${steamIdKey(remoteLow, remoteHigh)} caller=${retModule}+${retRva}`);
-    }
-});
-
-// Hard 180s Safety Timeout Guard
-const timeoutGuard = setTimeout(function() {
+// Hard 180s Safety Timeout Guard (from script attachment immediately before START)
+timeoutGuard = setTimeout(function() {
     cleanupRun22("180s safety timeout reached");
 }, 180000);
 
-console.log("[CrossLab Probe] Run 22 probe attached successfully. Waiting for session events...");
+console.log("[CrossLab Probe] Run 22 probe attached successfully. Waiting for channel 4101 event...");

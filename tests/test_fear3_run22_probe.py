@@ -22,9 +22,10 @@ def test_run22_is_entry_only_and_stalker_free() -> None:
     assert "fear3_breadcrumb_relative_0b12bd" not in source
     assert "fear3_breadcrumb_relative_448653" not in source
     assert "retval.replace(" not in source
+    assert "CloseP2PSessionWithUser" not in source
 
 
-def test_run22_preflight_is_pinned_to_reviewed_images() -> None:
+def test_run22_preflight_is_pinned_to_reviewed_images_and_entry_bytes() -> None:
     source = PROBE_RUN22.read_text(encoding="utf-8")
 
     assert "b9aefdbee81d92296532a17b2032a5731e40026d04026a8194cb9125a6a6c915" in source
@@ -34,22 +35,27 @@ def test_run22_preflight_is_pinned_to_reviewed_images() -> None:
     assert "peTimestamp: 0x6a70ef0e" in source
     assert "sizeOfImage: 0x1498000" in source
     assert "closeChannelRva: 0x611960" in source
+    assert "0x55, 0x8b, 0xec, 0x8b, 0x49, 0x04, 0xff, 0x75" in source
+    assert "bytesMatch(closeChannelTarget, run22ReviewedManifest.steamclient.closeChannelEntryBytes)" in source
     assert "RUN22 PREFLIGHT ABORT" in source
 
 
-def test_run22_hooks_target_vtable_slot_5() -> None:
+def test_run22_hooks_target_vtable_slot_5_with_fail_closed_rollback() -> None:
     source = PROBE_RUN22.read_text(encoding="utf-8")
 
     assert "legacyNetworkingVtable.add(5 * Process.pointerSize).readPointer()" in source
-    assert "legacyNetworkingVtable.add(4 * Process.pointerSize).readPointer()" in source
-    assert "CloseP2PChannelWithUser" in source
-    assert "CloseP2PSessionWithUser" in source
+    assert "legacyNetworkingVtable.add(4 * Process.pointerSize).readPointer()" not in source
+    assert "requiredAttach" in source
+    assert "cleanupRun22" in source
+    assert "run22InstalledListeners.pop()" in source
 
 
-def test_run22_captures_raw_module_relative_return_address_and_bounded_backtrace() -> None:
+def test_run22_captures_immediate_return_address_and_bounded_backtrace() -> None:
     source = PROBE_RUN22.read_text(encoding="utf-8")
 
-    assert "this.returnAddress" in source
+    # Immediate returnAddress capture before any other calls
+    assert "if (run22Finished) {\n            return;\n        }\n        const retAddr = this.returnAddress;\n        const channel = args[2].toInt32();" in source
+    assert "if (channel !== 4101) {\n            return;\n        }" in source
     assert "Process.findModuleByAddress(retAddr)" in source
     assert "retAddr.sub(owner.base)" in source
     assert "Thread.backtrace(context, Backtracer.ACCURATE)" in source
@@ -57,10 +63,11 @@ def test_run22_captures_raw_module_relative_return_address_and_bounded_backtrace
     assert "Run22CloseP2PChannelEvidence" in source
 
 
-def test_run22_detaches_on_channel_4101() -> None:
+def test_run22_detaches_and_clears_timer_on_channel_4101() -> None:
     source = PROBE_RUN22.read_text(encoding="utf-8")
 
-    assert "if (channel === 4101)" in source
+    assert "clearTimeout(timeoutGuard)" in source
+    assert "timeoutGuard = null" in source
     assert 'cleanupRun22("control channel 4101 captured")' in source
     assert "180000" in source
 
@@ -72,5 +79,5 @@ def test_run22_probe_hashes_match_reviewed_candidate() -> None:
     ).hexdigest()
     sha256 = hashlib.sha256(canonical).hexdigest()
 
-    assert git_blob == "48bd676081444db0ed056f785f92a0618f23fd63"
-    assert sha256 == "cf945b7bb7ba864050e3359a7ca9b19804852cb85b7019ed64e06cbb10a91899"
+    assert git_blob == "e1b903c47cf24f42ea51991ac4cb217fa6df2d72"
+    assert sha256 == "ca7205399202904e768e5600f6d120601f86c64ee9a4289833c3fd5184dde097"
