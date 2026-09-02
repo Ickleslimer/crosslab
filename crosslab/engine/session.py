@@ -33,11 +33,46 @@ from crosslab.protocol.models import (
 
 
 class InvestigationSession:
-    def __init__(self, session_id: str = "default", db_path: str = ":memory:"):
+    def __init__(
+        self,
+        session_id: str = "default",
+        db_path: str = ":memory:",
+        transcript_dir: Optional[str] = None,
+        enable_transcript: Optional[bool] = None,
+    ):
         self.session_id = session_id
-        self.storage = Storage(db_path)
+        self.storage = Storage(
+            db_path=db_path,
+            transcript_dir=transcript_dir,
+            enable_transcript=enable_transcript,
+        )
         self.storage.ensure_session(session_id)
         self.correlator = CorrelationEngine()
+
+    def get_transcript_path(self) -> Optional[str]:
+        """Return the absolute path to the session's live Markdown transcript file."""
+        recorder = self.storage.get_transcript_recorder(self.session_id)
+        if recorder:
+            return str(recorder.get_file_path())
+        return None
+
+    def close(self) -> None:
+        """Close storage and underlying database connections."""
+        if hasattr(self, "storage") and self.storage is not None:
+            self.storage.close()
+
+    def export_transcript_markdown(self, output_path: Optional[str] = None) -> str:
+        """Generate and optionally save the full structured Markdown transcript."""
+        recorder = self.storage.get_transcript_recorder(self.session_id)
+        if not recorder:
+            from crosslab.engine.transcript import TranscriptRecorder
+            recorder = TranscriptRecorder(session_id=self.session_id)
+        
+        md_content = recorder.generate_full_markdown(self.storage)
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(md_content)
+        return md_content
 
     # --- Peers & Messages ---
 

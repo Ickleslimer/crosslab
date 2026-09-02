@@ -9,6 +9,7 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+from crosslab.engine.transcript import TranscriptRecorder
 from crosslab.protocol.actions import (
     AgentRole,
     EvidenceRelation,
@@ -33,26 +34,56 @@ from crosslab.protocol.models import (
 
 
 class Storage:
-    def __init__(self, db_path: str = ":memory:"):
+    def __init__(
+        self,
+        db_path: str = ":memory:",
+        transcript_dir: Optional[str] = None,
+        enable_transcript: Optional[bool] = None,
+    ):
         self.db_path = db_path
         self._lock = threading.Lock()
+        self.transcript_dir = transcript_dir
+        if enable_transcript is not None:
+            self.enable_transcript = enable_transcript
+        else:
+            self.enable_transcript = (db_path != ":memory:" or transcript_dir is not None)
+        self._transcript_recorders: Dict[str, TranscriptRecorder] = {}
+
         if db_path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-            self._mem_conn = None
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL;")
+            self._conn.execute("PRAGMA foreign_keys=ON;")
         else:
-            self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
-            self._mem_conn.row_factory = sqlite3.Row
-            self._mem_conn.execute("PRAGMA foreign_keys=ON;")
+            self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys=ON;")
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        if self._mem_conn is not None:
-            return self._mem_conn
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+        return self._conn
+
+    def close(self) -> None:
+        """Close SQLite database connection."""
+        if hasattr(self, "_conn") and self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def get_transcript_recorder(self, session_id: str) -> Optional[TranscriptRecorder]:
+        if not self.enable_transcript:
+            return None
+        if session_id not in self._transcript_recorders:
+            if self.transcript_dir:
+                tdir = self.transcript_dir
+            elif self.db_path != ":memory:":
+                tdir = os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "transcripts")
+            else:
+                tdir = "transcripts"
+            self._transcript_recorders[session_id] = TranscriptRecorder(transcript_dir=tdir, session_id=session_id)
+        return self._transcript_recorders[session_id]
 
     def _init_db(self) -> None:
         with self._get_connection() as conn:
@@ -269,6 +300,12 @@ class Storage:
                     json.dumps(msg.payload),
                 ),
             )
+        recorder = self.get_transcript_recorder(msg.session_id)
+        if recorder:
+            try:
+                recorder.record_message(msg)
+            except Exception:
+                pass
 
     def get_messages(self, session_id: str = "default", limit: Optional[int] = 100) -> List[MessageEnvelope]:
         with self._get_connection() as conn:
@@ -335,6 +372,12 @@ class Storage:
                     hyp.updated_at,
                 ),
             )
+        recorder = self.get_transcript_recorder(hyp.session_id)
+        if recorder:
+            try:
+                recorder.record_hypothesis(hyp)
+            except Exception:
+                pass
 
     def get_hypotheses(self, session_id: str = "default") -> List[Hypothesis]:
         with self._get_connection() as conn:
@@ -475,6 +518,12 @@ class Storage:
                     run.created_at,
                 ),
             )
+        recorder = self.get_transcript_recorder(run.session_id)
+        if recorder:
+            try:
+                recorder.record_run(run)
+            except Exception:
+                pass
 
     def get_runs(self, session_id: str = "default") -> List[RunRecord]:
         with self._get_connection() as conn:

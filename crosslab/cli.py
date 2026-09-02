@@ -91,6 +91,29 @@ def cmd_status(args: argparse.Namespace) -> None:
     console.print(table)
 
 
+def cmd_transcript(args: argparse.Namespace) -> None:
+    session = InvestigationSession(
+        session_id=args.session,
+        db_path=args.db or f"./crosslab_{args.session}.db",
+        transcript_dir=args.transcript_dir,
+    )
+    recorder = session.storage.get_transcript_recorder(args.session)
+    if not recorder:
+        from crosslab.engine.transcript import TranscriptRecorder
+        recorder = TranscriptRecorder(transcript_dir=args.transcript_dir, session_id=args.session)
+
+    path = recorder.write_full_transcript(session.storage)
+    if args.export and str(path) != str(os.path.abspath(args.export)):
+        import shutil
+        shutil.copy(str(path), args.export)
+        path = os.path.abspath(args.export)
+
+    console.print(f"[bold green]Human-readable transcript generated:[/bold green] [cyan]{path}[/cyan]")
+    if getattr(args, "print_stdout", False):
+        with open(path, "r", encoding="utf-8") as f:
+            print(f.read())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CrossLab: Multi-Machine A2A Collaboration Protocol")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -114,6 +137,7 @@ def main() -> None:
     node_parser.add_argument("--session", type=str, default="default", help="Session ID")
     node_parser.add_argument("--peer", type=str, default=None, help="Remote peer URL to connect to")
     node_parser.add_argument("--db", type=str, default=None, help="SQLite database path")
+    node_parser.add_argument("--transcript-dir", type=str, default=None, help="Directory to store transcripts")
 
     # relay
     relay_parser = subparsers.add_parser("relay", help="Start a central P2P relay hub across NATs/firewalls")
@@ -124,6 +148,14 @@ def main() -> None:
     status_parser = subparsers.add_parser("status", help="Show investigation session summary")
     status_parser.add_argument("--session", type=str, default="default", help="Session ID")
     status_parser.add_argument("--db", type=str, default=None, help="SQLite database path")
+
+    # transcript
+    transcript_parser = subparsers.add_parser("transcript", help="Export or view human-readable session transcript")
+    transcript_parser.add_argument("--session", type=str, default="default", help="Session ID")
+    transcript_parser.add_argument("--db", type=str, default=None, help="SQLite database path")
+    transcript_parser.add_argument("--export", type=str, default=None, help="Export output file path (.md)")
+    transcript_parser.add_argument("--transcript-dir", type=str, default=None, help="Directory to store transcripts")
+    transcript_parser.add_argument("--print", dest="print_stdout", action="store_true", help="Print transcript to stdout")
 
     args = parser.parse_args()
 
@@ -138,6 +170,8 @@ def main() -> None:
         run_relay(port=args.port, host=args.host)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "transcript":
+        cmd_transcript(args)
     else:
         parser.print_help()
 

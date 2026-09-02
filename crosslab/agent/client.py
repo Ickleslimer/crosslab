@@ -328,3 +328,9 @@ class CrossLabClient:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.post(f"{self.base_url}/v1/a2a/sync/reconcile", json=payload)
             return res.json()
+
+    async def get_transcript(self) -> str:
+        """Fetch the live human-readable Markdown transcript from the node."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/transcript")
+            return res.text

@@ -56,6 +56,7 @@ class A2ANode:
         db_path: str = ":memory:",
         machine_name: Optional[str] = None,
         initial_peer_url: Optional[str] = None,
+        transcript_dir: Optional[str] = None,
     ):
         self.agent_id = agent_id
         self.role = role
@@ -65,7 +66,11 @@ class A2ANode:
         self.session_id = session_id
         self.machine_name = machine_name or f"Machine-{agent_id}"
         self.initial_peer_url = initial_peer_url
-        self.session = InvestigationSession(session_id=session_id, db_path=db_path)
+        self.session = InvestigationSession(
+            session_id=session_id,
+            db_path=db_path,
+            transcript_dir=transcript_dir,
+        )
 
         self.agent_card = AgentCard(
             name=f"CrossLab Node ({self.agent_id})",
@@ -80,6 +85,7 @@ class A2ANode:
                 "events": f"{self.endpoint_url}/v1/a2a/events",
                 "handshake": f"{self.endpoint_url}/v1/a2a/handshake",
                 "runs_sync": f"{self.endpoint_url}/v1/a2a/runs/sync",
+                "transcript": f"{self.endpoint_url}/v1/a2a/transcript",
             },
         )
 
@@ -412,6 +418,11 @@ class A2ANode:
         @app.get("/v1/a2a/summary")
         async def get_summary() -> Dict[str, Any]:
             return self.session.get_session_summary()
+
+        @app.get("/v1/a2a/transcript")
+        async def get_transcript() -> HTMLResponse:
+            md = self.session.export_transcript_markdown()
+            return HTMLResponse(content=md, media_type="text/markdown; charset=utf-8")
 
     async def _broadcast_event(self, data: Dict[str, Any]) -> None:
         for q in list(self._subscribers):

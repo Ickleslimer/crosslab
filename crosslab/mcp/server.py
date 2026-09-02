@@ -183,6 +183,14 @@ class CrossLabMCPServer:
                     "required": ["filename", "patch_content", "author_id", "description"],
                 },
             },
+            {
+                "name": "crosslab_get_transcript",
+                "description": "Fetch the full human-readable Markdown transcript of the investigation session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
         ]
 
     async def execute_tool_async(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -298,6 +306,10 @@ class CrossLabMCPServer:
                 description=arguments["description"],
             )
             return {"status": "ok", "artifact": art.model_dump()}
+
+        elif name == "crosslab_get_transcript":
+            text = await client.get_transcript()
+            return {"status": "ok", "transcript": text}
 
         return {"error": f"Tool '{name}' not found"}
 
@@ -420,6 +432,10 @@ class CrossLabMCPServer:
                 description=arguments["description"],
             )
             return {"status": "ok", "artifact": art.model_dump()}
+
+        elif name == "crosslab_get_transcript":
+            text = session.export_transcript_markdown()
+            return {"status": "ok", "transcript": text}
 
         return {"error": f"Tool '{name}' not found"}
 
