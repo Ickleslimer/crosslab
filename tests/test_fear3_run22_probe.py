@@ -79,7 +79,7 @@ def test_run22_timer_initialized_before_hook_installation() -> None:
 
 
 def test_run22_probe_hashes_match_reviewed_candidate() -> None:
-    canonical = PROBE_RUN22.read_bytes()
+    canonical = PROBE_RUN22.read_text(encoding="utf-8").encode("utf-8")
     git_blob = hashlib.sha1(
         b"blob " + str(len(canonical)).encode("ascii") + b"\0" + canonical
     ).hexdigest()
