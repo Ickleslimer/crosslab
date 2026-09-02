@@ -89,5 +89,5 @@ def test_run24_probe_hashes_match_reviewed_candidate() -> None:
     ).hexdigest()
     sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
-    assert git_blob == "367daeb870c7adb8fb0c43c46a26069278e636af"
-    assert sha256 == "cdc95782f6a58b855290593495caed4bf9fa0ff0ac830e5098f20f2f5dfaf600"
+    assert git_blob == "7a47fd484fba0f673c1ee63b12b04b01dd8b262a"
+    assert sha256 == "9a749ed9bcfc3f13fd0740214d2ec9703af87deeede45e5130212c9f39a14e99"

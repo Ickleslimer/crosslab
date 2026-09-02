@@ -4,6 +4,7 @@
  * Strict entry-only Interceptor instrumentation targeting Despair::PeerSteam::CloseChannel at F.E.A.R. 3.exe+0x923f90.
  * Completely eliminates Stalker and mid-function hooks to reduce instrumentation risk.
  * 600-second safety timeout for relaxed lobby reproduction.
+ * Line endings: Pinned to LF via repository .gitattributes.
  * 
  * Usage:
  *   frida -n "F.E.A.R. 3.exe" -l fear3_run24_probe.js
