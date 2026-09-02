@@ -4,13 +4,43 @@
 
   let {
     health,
+    healthError = false,
     port,
     onStop
   }: {
     health: HealthResponse | null;
+    healthError?: boolean;
     port: number;
     onStop: () => void;
   } = $props();
+
+  const dotState = $derived(() => {
+    if (healthError || !health) return 'error';
+    if (health.observability_ok === false) return 'degraded';
+    return 'healthy';
+  });
+
+  const dotClass = $derived(() => {
+    switch (dotState()) {
+      case 'error':
+        return 'bg-rose-500';
+      case 'degraded':
+        return 'bg-amber-500 animate-pulse';
+      default:
+        return 'bg-emerald-500 animate-pulse';
+    }
+  });
+
+  const dotTitle = $derived(() => {
+    if (!health) return 'Node unreachable';
+    const parts: string[] = [];
+    parts.push(health.observability_ok === false ? 'Observability: degraded' : 'Observability: ok');
+    if (health.message_count != null) parts.push(`${health.message_count} messages`);
+    if (health.last_message_age_s != null) parts.push(`last ${Math.round(health.last_message_age_s)}s ago`);
+    const peerCount = health.peers?.length ?? 0;
+    parts.push(`${peerCount} peer(s)`);
+    return parts.join(' · ');
+  });
 
   async function openClassic() {
     await openLegacyDashboard(port);
@@ -23,7 +53,11 @@
 
 <header class="flex flex-wrap justify-between items-center pb-4 mb-6 border-b border-gray-800">
   <div class="flex items-center space-x-3">
-    <div class="w-4 h-4 rounded-full bg-emerald-500 animate-pulse"></div>
+    <div
+      class="w-4 h-4 rounded-full {dotClass()}"
+      title={dotTitle()}
+      aria-label={dotTitle()}
+    ></div>
     <h1 class="text-2xl font-bold tracking-tight text-white">CrossLab <span class="text-xs px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700">Desktop</span></h1>
   </div>
   <div class="flex flex-wrap items-center gap-2 text-sm mt-2 md:mt-0">

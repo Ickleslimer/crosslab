@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from crosslab.engine.probe_validation import validate_instrumentation_payload
 from crosslab.protocol.actions import ActionType
 from crosslab.protocol.models import MessageEnvelope, SyncRunSignal, utc_now_iso
 
@@ -94,8 +95,16 @@ class RunBarrierTracker:
 
 
 class BarrierCoordinator:
-    def __init__(self, session: "InvestigationSession") -> None:
+    def __init__(
+        self,
+        session: "InvestigationSession",
+        *,
+        strict_instrumentation: bool = False,
+        local_agent_id: Optional[str] = None,
+    ) -> None:
         self.session = session
+        self.strict_instrumentation = strict_instrumentation
+        self.local_agent_id = local_agent_id
         self._runs: Dict[int, RunBarrierTracker] = {}
         self._session_paused = False
         self._pause_reason: Optional[str] = None
@@ -136,15 +145,31 @@ class BarrierCoordinator:
                 tracker.phase = BarrierPhase.PREPARING
 
         elif action in (ActionType.SYNC_READY, ActionType.REPORT_INSTRUMENTATION_READY):
-            if role:
-                tracker.mark_ready(role)
             if action == ActionType.REPORT_INSTRUMENTATION_READY and role:
                 inst = dict(payload)
                 if "pid" not in inst:
                     pid_match = re.search(r"PID\s+(\d+)", text, re.IGNORECASE)
                     if pid_match:
                         inst["pid"] = int(pid_match.group(1))
+                sender_id = envelope.origin_sender_id or envelope.sender_id
+                is_local = (
+                    self.local_agent_id is not None
+                    and sender_id == self.local_agent_id
+                )
+                validation = validate_instrumentation_payload(
+                    inst,
+                    strict=self.strict_instrumentation and is_local,
+                    validate_local_process=is_local,
+                )
+                inst["validation"] = {
+                    "ok": validation["ok"],
+                    "reason": validation["reason"],
+                }
                 tracker.instrumentation[role] = inst
+                if validation["ok"] or not self.strict_instrumentation:
+                    tracker.mark_ready(role)
+            elif role:
+                tracker.mark_ready(role)
 
         elif action == ActionType.START_RUN or re.search(r"START\s+RUN", text, re.IGNORECASE):
             tracker.phase = BarrierPhase.RUNNING

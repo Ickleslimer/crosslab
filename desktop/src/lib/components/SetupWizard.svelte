@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import type { AgentRole, SessionConfig } from '$lib/api/client';
+  import { createApi } from '$lib/api/client';
   import { getLocalAddresses, getNodePort, listSavedSessions, startNode, type NetworkEndpoint, type SavedSession } from '$lib/tauri';
   import { formatRelativeTime, generateJoinCode, loadSessionManifest, rememberSession, type SessionManifestEntry } from '$lib/sessions';
   import { nodeHealth, nodePort, sessionConfig } from '$lib/stores/session';
@@ -17,8 +17,15 @@
   let loading = $state(false);
   let error = $state('');
 
+  let showHarnessIds = $state(false);
+  let harnessAntigravity = $state('');
+  let harnessCodex = $state('');
+  let harnessOpencode = $state('');
+  let harnessCursor = $state('');
+
   const recommended = $derived(endpoints.find((endpoint) => endpoint.recommended));
   const advancedEndpoints = $derived(endpoints.filter((endpoint) => !endpoint.recommended));
+  const peerLooksLoopback = $derived(role === 'client' && /localhost|127\.0\.0\.1/i.test(peer));
 
   const recentSessions = $derived(
     savedSessions.map((saved) => {
@@ -98,6 +105,15 @@
       nodePort.set(port);
       sessionConfig.set(config);
       await rememberSession(config);
+      if (harnessAntigravity || harnessCodex || harnessOpencode || harnessCursor) {
+        const api = createApi(port);
+        await api.putManifest({
+          antigravity: harnessAntigravity || undefined,
+          codex: harnessCodex || undefined,
+          opencode: harnessOpencode || undefined,
+          cursor: harnessCursor || undefined
+        });
+      }
       await goto('/session');
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -193,6 +209,9 @@
       <label class="block text-sm">
         <span class="text-gray-400">Host Peer URL</span>
         <input bind:value={peer} class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm" placeholder="http://192.168.1.10:8765" />
+        {#if peerLooksLoopback}
+          <p class="text-xs text-amber-300 mt-2">This URL only works on the same machine. Use the host's LAN URL for remote clients.</p>
+        {/if}
         <p class="text-xs text-gray-500 mt-2">
           Paste the host URL and enter join code <code class="text-gray-300">{joinCode}</code> — both must match the previous session.
         </p>
@@ -266,6 +285,25 @@
         {/if}
       </section>
     {/if}
+
+    <section class="border border-gray-800 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        class="w-full flex justify-between items-center px-3 py-2 text-xs text-gray-400 bg-gray-900 hover:bg-gray-800"
+        onclick={() => (showHarnessIds = !showHarnessIds)}
+      >
+        <span>Harness thread IDs (optional)</span>
+        <span>{showHarnessIds ? 'Hide' : 'Show'}</span>
+      </button>
+      {#if showHarnessIds}
+        <div class="p-3 bg-gray-950/60 grid grid-cols-1 gap-2 text-xs">
+          <label>Antigravity <input bind:value={harnessAntigravity} class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 font-mono" placeholder="uuid" /></label>
+          <label>Codex <input bind:value={harnessCodex} class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 font-mono" /></label>
+          <label>OpenCode <input bind:value={harnessOpencode} class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 font-mono" /></label>
+          <label>Cursor <input bind:value={harnessCursor} class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 font-mono" /></label>
+        </div>
+      {/if}
+    </section>
 
     {#if error}
       <p class="text-rose-300 text-sm">{error}</p>

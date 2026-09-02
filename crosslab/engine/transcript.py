@@ -113,7 +113,12 @@ class TranscriptRecorder:
             # Natural language text
             text = (msg.natural_language or "").strip()
             if text:
-                lines.append(text)
+                if msg.action in (ActionType.HUMAN_REPRO_REQUEST, ActionType.HUMAN_SIGNAL):
+                    lines.append("> **Human Operator**")
+                    for line in text.splitlines():
+                        lines.append(f"> {line}")
+                else:
+                    lines.append(text)
                 lines.append("")
 
             # Formatted structured payload (if present and meaningful)
@@ -260,6 +265,36 @@ class TranscriptRecorder:
                     summary_snippet = summary_snippet[:80] + "..."
                 md.append(f"| **Run {r.run_id}** | `{outcome_str.upper()}` | `{r.build}` | `{r.hypothesis_id or '-'}` | {summary_snippet} |")
             md.append("")
+            md.append("---")
+            md.append("")
+
+        # Human operator runbook
+        human_msgs = [m for m in messages if m.action in (ActionType.HUMAN_REPRO_REQUEST, ActionType.HUMAN_SIGNAL)]
+        if human_msgs:
+            md.append("## Human Operator Runbook")
+            md.append("")
+            for m in human_msgs:
+                sender_badge = format_sender_badge(m.sender_id)
+                action_tag = format_action_tag(m.action)
+                md.append(f"### {sender_badge} &nbsp; {action_tag}")
+                payload = m.payload or {}
+                if payload.get("run_id") is not None:
+                    md.append(f"- **Run:** {payload.get('run_id')}")
+                if payload.get("signal"):
+                    md.append(f"- **Signal:** `{payload.get('signal')}`")
+                text = (m.natural_language or "").strip()
+                if text:
+                    md.append("")
+                    for line in text.splitlines():
+                        md.append(f"> {line}")
+                steps = payload.get("steps", [])
+                if steps:
+                    md.append("")
+                    for i, step in enumerate(steps, 1):
+                        role = step.get("role", "both") if isinstance(step, dict) else "both"
+                        instr = step.get("instruction", step) if isinstance(step, dict) else str(step)
+                        md.append(f"{i}. **[{role}]** {instr}")
+                md.append("")
             md.append("---")
             md.append("")
 

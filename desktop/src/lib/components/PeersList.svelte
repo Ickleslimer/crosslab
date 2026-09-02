@@ -18,12 +18,15 @@
               {peer.agent_id}
             </div>
             <div class="text-gray-400 text-[11px]">{peer.endpoint_url}</div>
+            {#if peer.topology_warning}
+              <div class="text-amber-400 text-[10px] mt-1">{peer.topology_warning}</div>
+            {/if}
           </div>
           <div class="text-right">
             <span class="px-2 py-0.5 rounded text-[10px] uppercase font-semibold {peer.role === 'host' ? 'bg-blue-900/60 text-blue-300' : 'bg-purple-900/60 text-purple-300'}">
               {peer.role}
             </span>
-            <div class="text-[10px] text-gray-500 mt-1">Offset: {peer.clock_offset_ms.toFixed(1)} ms</div>
+            <div class="text-[10px] text-gray-500 mt-1">Offset: {(peer.clock_offset_ms ?? 0).toFixed(1)} ms</div>
           </div>
         </div>
       {/each}

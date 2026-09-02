@@ -49,6 +49,23 @@ class InvestigationSession:
         self.storage.ensure_session(session_id)
         self.correlator = CorrelationEngine()
 
+    @property
+    def data_dir(self) -> str:
+        from crosslab.engine.manifest import data_dir_from_db_path
+        return data_dir_from_db_path(self.storage.db_path)
+
+    def get_harness_links(self):
+        from crosslab.engine.manifest import load_harness_links
+        if self.storage.db_path == ":memory:":
+            from crosslab.engine.manifest import HarnessLinks
+            return HarnessLinks()
+        return load_harness_links(self.data_dir)
+
+    def save_harness_links(self, links) -> None:
+        from crosslab.engine.manifest import save_harness_links
+        if self.storage.db_path != ":memory:":
+            save_harness_links(self.data_dir, links)
+
     def get_transcript_path(self) -> Optional[str]:
         """Return the absolute path to the session's live Markdown transcript file."""
         recorder = self.storage.get_transcript_recorder(self.session_id)

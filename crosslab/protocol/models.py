@@ -118,6 +118,7 @@ class HandshakeResponse(BaseModel):
     session_id: str
     accepted: bool = True
     message: str = "Handshake accepted"
+    warnings: List[str] = Field(default_factory=list)
     peers: List[AgentPeer] = Field(default_factory=list)
     agent_card: Optional[AgentCard] = None
 

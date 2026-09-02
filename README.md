@@ -143,6 +143,30 @@ CrossLab provides an MCP server connecting AI coding agents directly to the live
 uv run crosslab mcp --node-url http://127.0.0.1:8765
 ```
 
+### MCP install and doctor
+
+Generate harness-specific MCP config (paste-ready JSON or write to the harness config file):
+
+```powershell
+# Print config for Cursor
+uv run crosslab mcp install --harness cursor --node-url http://127.0.0.1:8765
+
+# Write merged config for Claude Desktop
+uv run crosslab mcp install --harness claude-desktop --write
+
+# Validate node + MCP tool registration
+uv run crosslab doctor --node-url http://127.0.0.1:8765
+
+# First-run observability checklist (transcript, DB, peers, message age)
+uv run crosslab doctor --observability --node-url http://127.0.0.1:8765
+```
+
+Supported harnesses: `cursor`, `claude-desktop`, `antigravity`, `codex`, `opencode`.
+
+### Harness thread linking (CodeTalker / OpenCode)
+
+Link external harness session IDs to a CrossLab investigation via the desktop Setup Wizard or MCP `crosslab_set_harness_link`. This is especially useful when CodeTalker cannot discover an OpenCode thread by project name — see [docs/codetalker-opencode.md](docs/codetalker-opencode.md).
+
 ### Available MCP Tools:
 - `crosslab_send_chat`: Send conversational messages to peer agents across the network.
 - `crosslab_propose_hypothesis`: Propose and broadcast an empirical hypothesis.
@@ -195,6 +219,15 @@ Query run barrier state before START:
 # MCP: crosslab_get_run_state(run_id=14)
 # REST: GET /v1/a2a/runs/14/barrier
 ```
+
+`REPORT_INSTRUMENTATION_READY` payloads should include `pid` and `process_start_time` (Unix epoch seconds). Only the **attaching agent** should emit this action. Set `CROSSLAB_STRICT_INSTRUMENTATION=1` to reject stale local READY messages when the PID is no longer running.
+
+### NAT and topology
+
+- **Host:** share a LAN URL from `crosslab doctor` or the desktop setup wizard — not `127.0.0.1` unless both agents are on the same machine.
+- **Client:** paste the host's LAN URL; the desktop wizard warns if you enter a loopback address.
+- **Remote networks:** use Tailscale, a VPN, or a tunnel (e.g. cloudflared) and set the public URL as the peer endpoint.
+- `GET /health` returns `advertised_reachable_externally` and per-peer `topology_warning` when loopback endpoints may break callbacks.
 
 ---
 

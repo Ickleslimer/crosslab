@@ -356,3 +356,70 @@ class CrossLabClient:
         async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(f"{self.base_url}/v1/a2a/transcript")
             return res.text
+
+    async def get_harness_links(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/session/manifest")
+            res.raise_for_status()
+            return res.json()
+
+    async def set_harness_link(self, harness: str, thread_id: str) -> Dict[str, Any]:
+        links = await self.get_harness_links()
+        from crosslab.engine.manifest import HarnessLinks
+        model = HarnessLinks(**links)
+        model.set_link(harness, thread_id)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.put(f"{self.base_url}/v1/a2a/session/manifest", json=model.model_dump())
+            res.raise_for_status()
+            return res.json()
+
+    async def get_runbook(self, run_id: Optional[int] = None) -> Dict[str, Any]:
+        params = {"run_id": run_id} if run_id is not None else {}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/runbook", params=params)
+            res.raise_for_status()
+            return res.json()
+
+    async def request_human_repro(
+        self,
+        run_id: int,
+        steps: List[Dict[str, str]],
+        title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        envelope = MessageEnvelope(
+            sender_id=self.agent_id,
+            origin_sender_id=self.agent_id,
+            action=ActionType.HUMAN_REPRO_REQUEST,
+            natural_language=title or f"Human reproduction steps for Run {run_id}",
+            payload={"run_id": run_id, "steps": steps, "title": title or f"Run {run_id} repro"},
+            relay=True,
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
+            return res.json()
+
+    async def human_signal(
+        self,
+        run_id: int,
+        signal: str,
+        detail: str,
+        human_role: str = "host",
+        ack_message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        envelope = MessageEnvelope(
+            sender_id=f"human-{human_role}",
+            origin_sender_id=f"human-{human_role}",
+            action=ActionType.HUMAN_SIGNAL,
+            natural_language=detail,
+            payload={
+                "run_id": run_id,
+                "signal": signal,
+                "detail": detail,
+                "human_role": human_role,
+                "ack_message_id": ack_message_id,
+            },
+            relay=True,
+        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.post(f"{self.base_url}/v1/a2a/messages", json=envelope.model_dump())
+            return res.json()

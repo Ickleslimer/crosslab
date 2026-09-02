@@ -185,10 +185,15 @@ class CrossLabMCPServer:
             },
             {
                 "name": "crosslab_get_transcript",
-                "description": "Fetch the full human-readable Markdown transcript of the investigation session.",
+                "description": "Fetch transcript markdown, or resolve a linked harness thread ID when harness is set.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "harness": {
+                            "type": "string",
+                            "description": "Optional harness key (antigravity, codex, opencode, cursor) to return linked thread ID",
+                        },
+                    },
                 },
             },
             {
@@ -241,6 +246,61 @@ class CrossLabMCPServer:
                         "payload": {"type": "object", "description": "Optional metadata e.g. pid"},
                     },
                     "required": ["run_id", "phase"],
+                },
+            },
+            {
+                "name": "crosslab_get_harness_links",
+                "description": "Get linked external harness thread/session IDs for this investigation.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "crosslab_set_harness_link",
+                "description": "Link an external harness thread ID to this CrossLab session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "harness": {"type": "string", "enum": ["antigravity", "codex", "opencode", "cursor"]},
+                        "thread_id": {"type": "string"},
+                    },
+                    "required": ["harness", "thread_id"],
+                },
+            },
+            {
+                "name": "crosslab_request_human_repro",
+                "description": "Request structured human reproduction steps for a run.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {"type": "integer"},
+                        "title": {"type": "string"},
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string"},
+                                    "instruction": {"type": "string"},
+                                },
+                                "required": ["instruction"],
+                            },
+                        },
+                    },
+                    "required": ["run_id", "steps"],
+                },
+            },
+            {
+                "name": "crosslab_human_signal",
+                "description": "Send a structured human operator signal (disconnect, error_dialog, ready, observation).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {"type": "integer"},
+                        "signal": {"type": "string", "enum": ["disconnect", "error_dialog", "ready", "observation", "ack"]},
+                        "detail": {"type": "string"},
+                        "human_role": {"type": "string", "enum": ["host", "client"], "default": "host"},
+                        "ack_message_id": {"type": "string"},
+                    },
+                    "required": ["run_id", "signal", "detail"],
                 },
             },
         ]
@@ -360,6 +420,16 @@ class CrossLabMCPServer:
             return {"status": "ok", "artifact": art.model_dump()}
 
         elif name == "crosslab_get_transcript":
+            harness = arguments.get("harness")
+            if harness:
+                links = await client.get_harness_links()
+                thread_id = links.get(harness.replace("-", "_")) or links.get(harness)
+                return {
+                    "status": "ok",
+                    "harness": harness,
+                    "linked_thread_id": thread_id,
+                    "note": "Use this ID with CodeTalker or the harness UI; CrossLab does not fetch external transcripts.",
+                }
             text = await client.get_transcript()
             return {"status": "ok", "transcript": text}
 
@@ -380,6 +450,30 @@ class CrossLabMCPServer:
                 run_id=arguments["run_id"],
                 phase=arguments["phase"],
                 payload=arguments.get("payload"),
+            )
+
+        elif name == "crosslab_get_harness_links":
+            links = await client.get_harness_links()
+            return {"status": "ok", "links": links}
+
+        elif name == "crosslab_set_harness_link":
+            links = await client.set_harness_link(arguments["harness"], arguments["thread_id"])
+            return {"status": "ok", "links": links}
+
+        elif name == "crosslab_request_human_repro":
+            return await client.request_human_repro(
+                run_id=arguments["run_id"],
+                steps=arguments["steps"],
+                title=arguments.get("title"),
+            )
+
+        elif name == "crosslab_human_signal":
+            return await client.human_signal(
+                run_id=arguments["run_id"],
+                signal=arguments["signal"],
+                detail=arguments["detail"],
+                human_role=arguments.get("human_role", "host"),
+                ack_message_id=arguments.get("ack_message_id"),
             )
 
         return {"error": f"Tool '{name}' not found"}

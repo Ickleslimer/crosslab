@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import json
 import logging
+import os
+import re
 import time
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +20,10 @@ import httpx
 
 from crosslab.engine.session import InvestigationSession
 from crosslab.engine.barrier import BarrierCoordinator, BarrierState
+from crosslab.engine.manifest import HarnessLinks
+from crosslab.engine.observability import build_observability_report
+from crosslab.engine.probe_validation import validate_instrumentation_payload
+from crosslab.engine.runbook import RunbookCoordinator, RunbookState
 from crosslab.protocol.actions import ActionType, AgentRole
 from crosslab.protocol.models import (
     AgentCard,
@@ -43,8 +49,15 @@ from crosslab.protocol.models import (
 )
 from crosslab.transport.dashboard import DASHBOARD_HTML
 from crosslab.transport.message_wait import MessageWaitRegistry, MessageWaiter
+from crosslab.transport.topology import is_loopback_url, topology_warning
 
 logger = logging.getLogger("crosslab.transport")
+
+
+class InstrumentationRejected(Exception):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 class A2ANode:
@@ -101,7 +114,14 @@ class A2ANode:
         self.session.register_peer(self.self_peer)
         self.session.prune_remote_peers(self.agent_id)
 
-        self.barrier = BarrierCoordinator(self.session)
+        self.strict_instrumentation = os.environ.get("CROSSLAB_STRICT_INSTRUMENTATION", "").lower() in (
+            "1", "true", "yes",
+        )
+        self.barrier = BarrierCoordinator(
+            self.session,
+            strict_instrumentation=self.strict_instrumentation,
+            local_agent_id=self.agent_id,
+        )
 
         # SSE Subscribers
         self._subscribers: List[asyncio.Queue] = []
@@ -115,6 +135,8 @@ class A2ANode:
         }
         # Consecutive heartbeat misses before pruning a remote peer
         self._peer_miss_counts: Dict[str, int] = {}
+        # Cached RTT/skew per peer agent_id from heartbeat
+        self._peer_metrics: Dict[str, Dict[str, float]] = {}
         # Background tasks
         self._bg_tasks: List[asyncio.Task] = []
 
@@ -163,6 +185,24 @@ class A2ANode:
 
         @app.get("/health")
         async def health() -> Dict[str, Any]:
+            peer_health = []
+            for peer in self.session.get_peers():
+                if peer.agent_id == self.agent_id:
+                    continue
+                metrics = self._peer_metrics.get(peer.agent_id, {})
+                warn = topology_warning(self.machine_name, peer)
+                peer_health.append({
+                    "agent_id": peer.agent_id,
+                    "endpoint_url": peer.endpoint_url,
+                    "machine_name": peer.machine_name,
+                    "rtt_ms": metrics.get("rtt_ms"),
+                    "clock_skew_ms": metrics.get("offset_ms"),
+                    "topology_warning": warn,
+                })
+            obs = build_observability_report(self.session, self.agent_id)
+            observability_ok = obs.get("ok", True)
+            if self.role in (AgentRole.HOST, AgentRole.CLIENT) and obs.get("peer_count", 0) == 0:
+                observability_ok = False
             return {
                 "status": "ok",
                 "agent_id": self.agent_id,
@@ -170,7 +210,17 @@ class A2ANode:
                 "session_id": self.session_id,
                 "port": self.port,
                 "version": "0.2.0",
+                "advertised_url": self.endpoint_url,
+                "advertised_reachable_externally": not is_loopback_url(self.endpoint_url),
+                "peers": peer_health,
+                "observability_ok": observability_ok,
+                "last_message_age_s": obs.get("last_message_age_s"),
+                "message_count": obs.get("message_count"),
             }
+
+        @app.get("/v1/a2a/observability")
+        async def get_observability() -> Dict[str, Any]:
+            return build_observability_report(self.session, self.agent_id)
 
         # --- A2A 1.0 Agent Card Discovery ---
 
@@ -194,6 +244,16 @@ class A2ANode:
             self._peer_miss_counts[req.agent_id] = 0
             logger.info(f"[{self.agent_id}] Handshake accepted from {req.agent_id} ({req.role.value}) at {req.endpoint_url}")
 
+            warnings: List[str] = []
+            topo_warn = topology_warning(self.machine_name, peer)
+            if topo_warn:
+                warnings.append(topo_warn)
+                await self._broadcast_event({
+                    "event": "topology_warning",
+                    "peer_id": req.agent_id,
+                    "warning": topo_warn,
+                })
+
             await self._broadcast_event({
                 "event": "peer_joined",
                 "peer": peer.model_dump(),
@@ -206,6 +266,7 @@ class A2ANode:
                 session_id=self.session_id,
                 accepted=True,
                 message=f"Welcome {req.agent_id} to session {self.session_id}",
+                warnings=warnings,
                 peers=peers,
                 agent_card=self.agent_card,
             )
@@ -216,6 +277,20 @@ class A2ANode:
                 peer for peer in self.session.get_peers()
                 if peer.agent_id != self.agent_id
             ]
+
+        @app.get("/v1/a2a/peers/detailed")
+        async def get_peers_detailed() -> List[Dict[str, Any]]:
+            result = []
+            for peer in self.session.get_peers():
+                if peer.agent_id == self.agent_id:
+                    continue
+                metrics = self._peer_metrics.get(peer.agent_id, {})
+                data = peer.model_dump()
+                data["rtt_ms"] = metrics.get("rtt_ms")
+                data["clock_skew_ms"] = metrics.get("offset_ms")
+                data["topology_warning"] = topology_warning(self.machine_name, peer)
+                result.append(data)
+            return result
 
         # --- Clock Sync & Ping/Pong ---
 
@@ -267,7 +342,14 @@ class A2ANode:
 
         @app.post("/v1/a2a/messages")
         async def receive_message(envelope: MessageEnvelope) -> Dict[str, Any]:
-            if not await self._ingest_message(envelope):
+            try:
+                ingested = await self._ingest_message(envelope)
+            except InstrumentationRejected as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"status": "rejected", "reason": exc.reason},
+                ) from exc
+            if not ingested:
                 return {"status": "already_processed", "message_id": envelope.message_id}
 
             # Relay to other remote peers across network if relay requested
@@ -500,6 +582,42 @@ class A2ANode:
             md = self.session.export_transcript_markdown()
             return HTMLResponse(content=md, media_type="text/markdown; charset=utf-8")
 
+        @app.get("/v1/a2a/session/manifest", response_model=HarnessLinks)
+        async def get_session_manifest() -> HarnessLinks:
+            return self.session.get_harness_links()
+
+        @app.put("/v1/a2a/session/manifest", response_model=HarnessLinks)
+        async def put_session_manifest(links: HarnessLinks) -> HarnessLinks:
+            self.session.save_harness_links(links)
+            return self.session.get_harness_links()
+
+        @app.get("/v1/a2a/runbook", response_model=RunbookState)
+        async def get_runbook(run_id: Optional[int] = None) -> RunbookState:
+            coordinator = RunbookCoordinator(self.session)
+            return coordinator.get_runbook(run_id=run_id)
+
+        @app.post("/v1/a2a/runbook/ack")
+        async def ack_runbook_item(body: Dict[str, Any]) -> Dict[str, Any]:
+            message_id = body.get("message_id")
+            human_role = body.get("human_role", "host")
+            response_text = body.get("response", "Acknowledged")
+            run_id = body.get("run_id")
+            envelope = MessageEnvelope(
+                sender_id=f"human-{human_role}",
+                origin_sender_id=f"human-{human_role}",
+                action=ActionType.HUMAN_SIGNAL,
+                natural_language=response_text,
+                payload={
+                    "ack_message_id": message_id,
+                    "human_role": human_role,
+                    "signal": "ack",
+                    "run_id": run_id,
+                },
+                relay=True,
+            )
+            await self._ingest_message(envelope)
+            return {"status": "ok", "message_id": envelope.message_id}
+
     async def _broadcast_event(self, data: Dict[str, Any]) -> None:
         for q in list(self._subscribers):
             try:
@@ -507,10 +625,33 @@ class A2ANode:
             except Exception:
                 pass
 
+    def _check_instrumentation_rejection(self, envelope: MessageEnvelope) -> Optional[str]:
+        """Reject local stale READY in strict mode before persistence."""
+        if envelope.action != ActionType.REPORT_INSTRUMENTATION_READY:
+            return None
+        if envelope.sender_id != self.agent_id:
+            return None
+        if not self.strict_instrumentation:
+            return None
+        payload = dict(envelope.payload or {})
+        text = envelope.natural_language or ""
+        if "pid" not in payload:
+            pid_match = re.search(r"PID\s+(\d+)", text, re.IGNORECASE)
+            if pid_match:
+                payload["pid"] = int(pid_match.group(1))
+        result = validate_instrumentation_payload(payload, strict=True, validate_local_process=True)
+        if not result["ok"]:
+            return result["reason"]
+        return None
+
     async def _ingest_message(self, envelope: MessageEnvelope) -> bool:
         """Persist and publish one unseen message through every local delivery path."""
         if envelope.message_id in self._seen_message_ids:
             return False
+
+        rejection = self._check_instrumentation_rejection(envelope)
+        if rejection:
+            raise InstrumentationRejected(rejection)
 
         self.session.record_message(envelope)
         self._seen_message_ids.add(envelope.message_id)
@@ -765,6 +906,8 @@ class A2ANode:
             offset_ms = offset_ns / 1_000_000.0
             uncertainty_ms = rtt_ms / 2.0
 
+            metrics = {"rtt_ms": rtt_ms, "offset_ms": offset_ms, "uncertainty_ms": uncertainty_ms}
+
             # Update peer in storage
             peers = self.session.get_peers()
             for p in peers:
@@ -772,9 +915,10 @@ class A2ANode:
                     p.clock_offset_ms = offset_ms
                     p.clock_uncertainty_ms = uncertainty_ms
                     self.session.register_peer(p)
+                    self._peer_metrics[p.agent_id] = metrics
                     break
 
-            return {"rtt_ms": rtt_ms, "offset_ms": offset_ms, "uncertainty_ms": uncertainty_ms}
+            return metrics
 
     async def _relay_to_peers(self, envelope: MessageEnvelope) -> None:
         """Relays a message envelope to all other known registered peers across the network."""

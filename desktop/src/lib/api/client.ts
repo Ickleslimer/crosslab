@@ -14,6 +14,39 @@ export interface HealthResponse {
   role: string;
   session_id: string;
   port: number;
+  advertised_url?: string;
+  advertised_reachable_externally?: boolean;
+  observability_ok?: boolean;
+  last_message_age_s?: number | null;
+  message_count?: number;
+  peers?: Array<{
+    agent_id: string;
+    endpoint_url: string;
+    topology_warning?: string | null;
+    rtt_ms?: number;
+    clock_skew_ms?: number;
+  }>;
+}
+
+export interface HarnessLinks {
+  antigravity?: string;
+  codex?: string;
+  opencode?: string;
+  cursor?: string;
+  notes?: string;
+}
+
+export interface RunbookItem {
+  message_id: string;
+  run_id?: number;
+  title: string;
+  steps: Array<{ role: string; instruction: string }>;
+  status: string;
+}
+
+export interface RunbookState {
+  pending: RunbookItem[];
+  completed: RunbookItem[];
 }
 
 export interface AgentPeer {
@@ -21,6 +54,8 @@ export interface AgentPeer {
   role: string;
   endpoint_url: string;
   clock_offset_ms: number;
+  topology_warning?: string | null;
+  rtt_ms?: number;
 }
 
 export interface MessageEnvelope {
@@ -81,7 +116,34 @@ export function createApi(port: number) {
   return {
     health: () => fetchJson<HealthResponse>(`${base}/health`),
     summary: () => fetchJson<SessionSummary>(`${base}/v1/a2a/summary`),
-    peers: () => fetchJson<AgentPeer[]>(`${base}/v1/a2a/peers`),
+    peers: () => fetchJson<AgentPeer[]>(`${base}/v1/a2a/peers/detailed`),
+    manifest: () => fetchJson<HarnessLinks>(`${base}/v1/a2a/session/manifest`),
+    putManifest: (links: HarnessLinks) =>
+      fetchJson<HarnessLinks>(`${base}/v1/a2a/session/manifest`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(links)
+      }),
+    runbook: (runId?: number) =>
+      fetchJson<RunbookState>(`${base}/v1/a2a/runbook${runId != null ? `?run_id=${runId}` : ''}`),
+    humanSignal: (payload: {
+      run_id: number;
+      signal: string;
+      detail: string;
+      human_role: string;
+      ack_message_id?: string;
+    }) =>
+      fetchJson<unknown>(`${base}/v1/a2a/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_id: `human-${payload.human_role}`,
+          action: 'human_signal',
+          natural_language: payload.detail,
+          payload,
+          relay: true
+        })
+      }),
     messages: (limit = 200) => fetchJson<MessageEnvelope[]>(`${base}/v1/a2a/messages?limit=${limit}`),
     hypotheses: () => fetchJson<Hypothesis[]>(`${base}/v1/a2a/hypotheses`),
     runs: () => fetchJson<RunRecord[]>(`${base}/v1/a2a/runs`),

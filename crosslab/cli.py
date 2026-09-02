@@ -4,6 +4,7 @@ CrossLab Command Line Interface.
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from typing import Optional
@@ -15,6 +16,8 @@ if hasattr(sys.stdout, "reconfigure"):
 from rich.console import Console
 from rich.table import Table
 import uvicorn
+
+from pathlib import Path
 
 from crosslab.cases.fear3.scenario import run_fear3_investigation_demo
 from crosslab.engine.session import InvestigationSession
@@ -31,6 +34,58 @@ def cmd_demo(args: argparse.Namespace) -> None:
         asyncio.run(run_fear3_investigation_demo(interactive=args.interactive))
     else:
         console.print(f"[red]Unknown case study '{args.case}'. Available: fear3[/red]")
+
+
+def cmd_mcp_install(args: argparse.Namespace) -> None:
+    from crosslab.mcp.install import (
+        SUPPORTED_HARNESSES,
+        get_install_path,
+        merge_config,
+        post_install_hint,
+        render_config,
+        write_config,
+    )
+
+    config = render_config(args.harness, node_url=args.node_url, project_root=args.project_root)
+    if args.write:
+        path = Path(args.output) if args.output else get_install_path(args.harness)
+        existing: dict = {}
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                existing = json.load(f)
+        merged = merge_config(existing, config, args.harness)
+        write_config(path, merged)
+        console.print(f"[bold green]Wrote MCP config[/bold green] to [cyan]{path}[/cyan]")
+        console.print(f"[dim]{post_install_hint(args.harness, path)}[/dim]")
+    else:
+        print(json.dumps(config, indent=2))
+        console.print(f"\n[dim]{post_install_hint(args.harness, get_install_path(args.harness))}[/dim]")
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    from crosslab.mcp.doctor import run_doctor
+
+    node_url = args.node_url or os.environ.get("CROSSLAB_NODE_URL", "http://127.0.0.1:8765")
+    results = asyncio.run(
+        run_doctor(
+            node_url=node_url,
+            session_id=args.session,
+            observability=getattr(args, "observability", False),
+        )
+    )
+
+    table = Table(title="CrossLab Doctor", header_style="bold cyan")
+    table.add_column("Check", style="cyan")
+    table.add_column("Status", style="white")
+    table.add_column("Detail", style="white")
+
+    for check in results["checks"]:
+        status = "[green]OK[/green]" if check["ok"] else "[red]FAIL[/red]"
+        table.add_row(check["name"], status, check["detail"])
+
+    console.print(table)
+    if not results["ok"]:
+        sys.exit(1)
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -148,8 +203,26 @@ def main() -> None:
 
     # mcp
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server for IDEs & AI coding agents")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command")
     mcp_parser.add_argument("--node-url", type=str, default=None, help="Connect MCP to local node URL (e.g. http://127.0.0.1:8000)")
     mcp_parser.add_argument("--test", action="store_true", help="List registered MCP tools and exit")
+
+    mcp_install = mcp_sub.add_parser("install", help="Generate harness-specific MCP config")
+    mcp_install.add_argument("--harness", required=True, choices=["cursor", "claude-desktop", "antigravity", "codex", "opencode"])
+    mcp_install.add_argument("--node-url", type=str, default="http://127.0.0.1:8765")
+    mcp_install.add_argument("--project-root", type=str, default=None, help="CrossLab repo root for uv --directory")
+    mcp_install.add_argument("--write", action="store_true", help="Write/merge into harness config file (default: print JSON)")
+    mcp_install.add_argument("--output", type=str, default=None, help="Override output path for --write")
+
+    # doctor
+    doctor_parser = subparsers.add_parser("doctor", help="Validate node, MCP, and topology health")
+    doctor_parser.add_argument("--node-url", type=str, default=None)
+    doctor_parser.add_argument("--session", type=str, default="default")
+    doctor_parser.add_argument(
+        "--observability",
+        action="store_true",
+        help="Verify transcript endpoint, DB path, peer count, and last message age",
+    )
 
     # node
     node_parser = subparsers.add_parser("node", help="Start an A2A agent node")
@@ -201,7 +274,12 @@ def main() -> None:
     if args.command == "demo":
         cmd_demo(args)
     elif args.command == "mcp":
-        cmd_mcp(args)
+        if getattr(args, "mcp_command", None) == "install":
+            cmd_mcp_install(args)
+        else:
+            cmd_mcp(args)
+    elif args.command == "doctor":
+        cmd_doctor(args)
     elif args.command == "node":
         cmd_node(args)
     elif args.command == "relay":

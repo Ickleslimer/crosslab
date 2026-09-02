@@ -43,12 +43,18 @@ class ActionType(str, Enum):
 
     # Instrumentation
     REQUEST_INSTRUMENTATION = "request_instrumentation"
+    # Payload: {"run_id": N, "pid": N, "process_start_time": epoch_seconds, "probe_hash": "..."}
+    # Only the attaching agent should emit this action (not a peer describing another machine's PID).
     REPORT_INSTRUMENTATION_READY = "report_instrumentation_ready"
 
     # Artifacts & Code
     SHARE_LOG = "share_log"
     SHARE_FILE = "share_file"
     SHARE_PATCH = "share_patch"
+
+    # Human operator coordination
+    HUMAN_REPRO_REQUEST = "human_repro_request"
+    HUMAN_SIGNAL = "human_signal"
 
     # Results & Failures
     REPORT_RESULT = "report_result"

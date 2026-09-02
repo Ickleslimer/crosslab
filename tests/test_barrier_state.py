@@ -4,6 +4,7 @@ Tests for barrier state coordination.
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from unittest.mock import patch
 
 from crosslab.engine.barrier import BarrierCoordinator, BarrierPhase
 from crosslab.engine.session import InvestigationSession
@@ -159,16 +160,18 @@ def test_unpause_restores_authorization(coordinator, session):
 
 
 def test_instrumentation_pid(coordinator, session):
-    _record(coordinator, session, MessageEnvelope(
-        message_id="inst",
-        session_id="test-session",
-        sender_id="agent-client",
-        action=ActionType.REPORT_INSTRUMENTATION_READY,
-        natural_language="Frida attached PID 8076 for Run 14",
-        payload={"run_id": 14, "pid": 8076},
-    ))
+    with patch("crosslab.engine.probe_validation.is_process_alive", return_value=True):
+        _record(coordinator, session, MessageEnvelope(
+            message_id="inst",
+            session_id="test-session",
+            sender_id="agent-client",
+            action=ActionType.REPORT_INSTRUMENTATION_READY,
+            natural_language="Frida attached PID 8076 for Run 14",
+            payload={"run_id": 14, "pid": 8076, "process_start_time": 1000.0},
+        ))
     state = coordinator.get_barrier_state(14)
     assert state.instrumentation.get("client", {}).get("pid") == 8076
+    assert "validation" in state.instrumentation.get("client", {})
 
 
 def test_duplicate_ready_idempotent(coordinator, session):
