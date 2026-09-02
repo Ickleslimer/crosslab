@@ -195,6 +195,8 @@ requiredAttach(peerSteamCloseTarget, "Run24 Despair::PeerSteam::CloseChannel ent
         }
         const retAddr = this.returnAddress;
         const peerSteamThis = this.context.ecx;
+        const endpointDescriptorPtr = args[0];
+
         let channel = -1;
         try {
             channel = peerSteamThis.add(6).readU16();
@@ -221,17 +223,23 @@ requiredAttach(peerSteamCloseTarget, "Run24 Despair::PeerSteam::CloseChannel ent
             retRva = `0x${retAddr.sub(owner.base).toString(16)}`;
         }
 
-        const endpointDescriptorPtr = args[0];
+        let descriptorReadOk = false;
+        let descriptorReadError = null;
         let descriptorDword0 = 0;
         let descriptorWord4 = 0;
         let descriptorWord6 = 0;
         try {
-            if (!endpointDescriptorPtr.isNull()) {
+            if (!endpointDescriptorPtr || endpointDescriptorPtr.isNull()) {
+                descriptorReadError = "endpoint descriptor pointer is NULL";
+            } else {
                 descriptorDword0 = endpointDescriptorPtr.readU32();
                 descriptorWord4 = endpointDescriptorPtr.add(4).readU16();
                 descriptorWord6 = endpointDescriptorPtr.add(6).readU16();
+                descriptorReadOk = true;
             }
-        } catch (_) {}
+        } catch (error) {
+            descriptorReadError = error ? error.toString() : "unknown read error";
+        }
 
         const evidence = {
             event: "Run24PeerSteamCloseEvidence",
@@ -240,6 +248,8 @@ requiredAttach(peerSteamCloseTarget, "Run24 Despair::PeerSteam::CloseChannel ent
             channel: channel,
             peer_steam_this: peerSteamThis.toString(),
             endpoint_descriptor_ptr: endpointDescriptorPtr.toString(),
+            descriptor_read_ok: descriptorReadOk,
+            descriptor_read_error: descriptorReadError,
             descriptor_fields: {
                 dword0: `0x${descriptorDword0.toString(16).padStart(8, "0")}`,
                 word4: `0x${descriptorWord4.toString(16).padStart(4, "0")}`,

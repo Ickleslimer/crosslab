@@ -50,13 +50,15 @@ def test_run24_hooks_target_peer_steam_entry_with_fail_closed_rollback() -> None
     assert "run24InstalledListeners.pop()" in source
 
 
-def test_run24_captures_immediate_return_address_descriptor_and_bounded_backtrace_with_synchronous_latch() -> None:
+def test_run24_captures_immediate_args_and_explicit_read_status_telemetry() -> None:
     source = PROBE_RUN24.read_text(encoding="utf-8")
 
-    assert "if (run24Finished || run24Captured) {\n            return;\n        }\n        const retAddr = this.returnAddress;\n        const peerSteamThis = this.context.ecx;" in source
+    # Immediate capture of returnAddress, ecx, and args[0] before other operations
+    assert "if (run24Finished || run24Captured) {\n            return;\n        }\n        const retAddr = this.returnAddress;\n        const peerSteamThis = this.context.ecx;\n        const endpointDescriptorPtr = args[0];" in source
     assert "if (channel !== 4101) {\n            return;\n        }" in source
     assert "if (run24Captured) {\n            return;\n        }\n        run24Captured = true;" in source
-    assert "endpointDescriptorPtr" in source
+    assert "descriptor_read_ok: descriptorReadOk" in source
+    assert "descriptor_read_error: descriptorReadError" in source
     assert "descriptor_fields" in source
     assert "Process.findModuleByAddress(retAddr)" in source
     assert "retAddr.sub(owner.base)" in source
@@ -86,5 +88,5 @@ def test_run24_probe_hashes_match_reviewed_candidate() -> None:
     ).hexdigest()
     sha256 = hashlib.sha256(canonical).hexdigest()
 
-    assert git_blob == "2644cb69fff6f4d59d9513096e32f9c7ab4fffca"
-    assert sha256 == "9c3157db6181a8f902b7f0e1fbe240ba41256cf29bb7dc2ca0be26acd6a3574c"
+    assert git_blob == "367daeb870c7adb8fb0c43c46a26069278e636af"
+    assert sha256 == "cdc95782f6a58b855290593495caed4bf9fa0ff0ac830e5098f20f2f5dfaf600"
