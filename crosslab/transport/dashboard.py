@@ -271,15 +271,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     const data = JSON.parse(event.data);
                     if (data.event === 'message') {
                         refreshMessages();
+                        if (data.envelope && (data.envelope.action === 'start_run' || data.envelope.action === 'abort_run' || data.envelope.action === 'observation' || data.envelope.action === 'hypothesis')) {
+                            refreshRuns();
+                            refreshHypotheses();
+                        }
                     } else if (data.event === 'peer_joined') {
                         refreshPeers();
                     } else if (data.event === 'hypothesis_proposed' || data.event === 'evidence_added') {
                         refreshHypotheses();
-                    } else if (data.event === 'run_recorded') {
+                    } else if (data.event === 'run_recorded' || data.event === 'sync_signal' || data.event === 'observation_added') {
                         refreshRuns();
                     }
                 } catch(e) {}
             };
+
+            // Periodic auto-refresh intervals for live HUD updates
+            setInterval(refreshRuns, 3000);
+            setInterval(refreshMessages, 2000);
+            setInterval(refreshHypotheses, 5000);
+            setInterval(refreshPeers, 8000);
         }
 
         // Chat send button
