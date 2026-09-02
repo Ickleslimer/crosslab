@@ -40,6 +40,24 @@ def test_storage_peers_and_messages() -> None:
     assert msgs[0].natural_language == "Hello peer"
 
 
+def test_storage_clear_remote_peers() -> None:
+    storage = Storage(":memory:")
+    storage.upsert_peer(
+        AgentPeer(agent_id="host-agent", role=AgentRole.HOST, endpoint_url="http://127.0.0.1:8765"),
+        session_id="test-session",
+    )
+    storage.upsert_peer(
+        AgentPeer(agent_id="client-agent", role=AgentRole.CLIENT, endpoint_url="http://127.0.0.1:8766"),
+        session_id="test-session",
+    )
+
+    storage.clear_remote_peers("test-session", keep_agent_id="host-agent")
+    peers = storage.get_peers(session_id="test-session")
+
+    assert len(peers) == 1
+    assert peers[0].agent_id == "host-agent"
+
+
 def test_storage_message_limit_returns_latest_in_chronological_order() -> None:
     storage = Storage(":memory:")
     for index in range(5):

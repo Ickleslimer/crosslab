@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "default",
+  "description": "Default capabilities for CrossLab desktop",
+  "windows": ["main", "classic-hud"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "shell:allow-spawn",
+    "shell:allow-kill",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "crosslab-node",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "opener:default",
+    "store:default"
+  ]
+}

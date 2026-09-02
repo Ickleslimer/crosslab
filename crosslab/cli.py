@@ -20,6 +20,7 @@ from crosslab.cases.fear3.scenario import run_fear3_investigation_demo
 from crosslab.engine.session import InvestigationSession
 from crosslab.mcp.server import CrossLabMCPServer
 from crosslab.protocol.actions import AgentRole
+from crosslab.sidecar import resolve_data_paths
 from crosslab.transport.node import A2ANode
 
 console = Console(force_terminal=True, legacy_windows=False)
@@ -50,14 +51,16 @@ def cmd_mcp(args: argparse.Namespace) -> None:
 
 def cmd_node(args: argparse.Namespace) -> None:
     role = AgentRole(args.role)
+    db_path, transcript_dir = resolve_data_paths(args.data_dir, args.session, args.db, args.transcript_dir)
     node = A2ANode(
         agent_id=args.agent_id or f"agent-{role.value}",
         role=role,
         host=args.host,
         port=args.port,
         session_id=args.session,
-        db_path=args.db or f"./crosslab_{args.session}.db",
+        db_path=db_path,
         initial_peer_url=args.peer,
+        transcript_dir=transcript_dir,
     )
     console.print(f"[bold green]Starting CrossLab A2A Node[/bold green]")
     console.print(f"  Agent ID:   [cyan]{node.agent_id}[/cyan]")
@@ -136,6 +139,7 @@ def main() -> None:
     node_parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
     node_parser.add_argument("--session", type=str, default="default", help="Session ID")
     node_parser.add_argument("--peer", type=str, default=None, help="Remote peer URL to connect to")
+    node_parser.add_argument("--data-dir", type=str, default=None, help="Root directory for DB and transcripts")
     node_parser.add_argument("--db", type=str, default=None, help="SQLite database path")
     node_parser.add_argument("--transcript-dir", type=str, default=None, help="Directory to store transcripts")
 

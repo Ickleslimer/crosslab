@@ -95,6 +95,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     <script>
         const baseUrl = window.location.origin;
+        let messageCount = 0;
+
+        function isNearBottom(container, threshold = 50) {
+            return container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+        }
+
+        function restoreScroll(container, previousScrollTop, previousScrollHeight, wasNearBottom, previousCount, nextCount) {
+            const shouldFollow = wasNearBottom || (nextCount > previousCount && isNearBottom(container));
+            if (shouldFollow) {
+                container.scrollTop = container.scrollHeight;
+                return;
+            }
+            const heightDelta = container.scrollHeight - previousScrollHeight;
+            container.scrollTop = previousScrollTop + heightDelta;
+        }
 
         async function initDashboard() {
             try {
@@ -149,6 +164,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             const res = await fetch(`${baseUrl}/v1/a2a/messages`);
             const msgs = await res.json();
             const container = document.getElementById('chat-messages');
+            const previousScrollTop = container.scrollTop;
+            const previousScrollHeight = container.scrollHeight;
+            const wasNearBottom = isNearBottom(container);
+            const previousCount = messageCount;
+            messageCount = msgs.length;
             if (!msgs.length) {
                 container.innerHTML = `<div class="text-xs text-gray-500 italic">No messages yet.</div>`;
                 return;
@@ -187,13 +207,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                 `;
             }).join('');
-            container.scrollTop = container.scrollHeight;
+            restoreScroll(container, previousScrollTop, previousScrollHeight, wasNearBottom, previousCount, messageCount);
         }
 
         async function refreshHypotheses() {
             const res = await fetch(`${baseUrl}/v1/a2a/hypotheses`);
             const hyps = await res.json();
             const container = document.getElementById('hypotheses-container');
+            const previousScrollTop = container.scrollTop;
+            const previousScrollHeight = container.scrollHeight;
             if (!hyps.length) {
                 container.innerHTML = `<div class="text-xs text-gray-500 italic">No hypotheses proposed yet.</div>`;
                 return;
@@ -225,12 +247,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                 `;
             }).join('');
+            const heightDelta = container.scrollHeight - previousScrollHeight;
+            container.scrollTop = previousScrollTop + heightDelta;
         }
 
         async function refreshRuns() {
             const res = await fetch(`${baseUrl}/v1/a2a/runs`);
             const runs = await res.json();
             const container = document.getElementById('runs-container');
+            const previousScrollTop = container.scrollTop;
+            const previousScrollHeight = container.scrollHeight;
             if (!runs.length) {
                 container.innerHTML = `<div class="text-xs text-gray-500 italic">No synchronized runs recorded yet.</div>`;
                 return;
@@ -262,6 +288,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                 `;
             }).join('');
+            const heightDelta = container.scrollHeight - previousScrollHeight;
+            container.scrollTop = previousScrollTop + heightDelta;
         }
 
         function setupSSE() {

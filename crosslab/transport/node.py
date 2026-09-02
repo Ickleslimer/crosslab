@@ -97,6 +97,7 @@ class A2ANode:
             capabilities=self.agent_card.capabilities,
         )
         self.session.register_peer(self.self_peer)
+        self.session.prune_remote_peers(self.agent_id)
 
         # SSE Subscribers
         self._subscribers: List[asyncio.Queue] = []
@@ -106,6 +107,8 @@ class A2ANode:
         self._seen_message_ids: set = {
             message.message_id for message in self.session.get_messages(limit=None)
         }
+        # Consecutive heartbeat misses before pruning a remote peer
+        self._peer_miss_counts: Dict[str, int] = {}
         # Background tasks
         self._bg_tasks: List[asyncio.Task] = []
 
@@ -158,6 +161,8 @@ class A2ANode:
                 "status": "ok",
                 "agent_id": self.agent_id,
                 "role": self.role.value,
+                "session_id": self.session_id,
+                "port": self.port,
                 "version": "0.2.0",
             }
 
@@ -180,6 +185,7 @@ class A2ANode:
                 capabilities=req.capabilities,
             )
             self.session.register_peer(peer)
+            self._peer_miss_counts[req.agent_id] = 0
             logger.info(f"[{self.agent_id}] Handshake accepted from {req.agent_id} ({req.role.value}) at {req.endpoint_url}")
 
             await self._broadcast_event({
@@ -200,7 +206,10 @@ class A2ANode:
 
         @app.get("/v1/a2a/peers", response_model=List[AgentPeer])
         async def get_peers() -> List[AgentPeer]:
-            return self.session.get_peers()
+            return [
+                peer for peer in self.session.get_peers()
+                if peer.agent_id != self.agent_id
+            ]
 
         # --- Clock Sync & Ping/Pong ---
 
@@ -616,8 +625,17 @@ class A2ANode:
                     continue
                 try:
                     await self.measure_clock_offset(peer.endpoint_url)
+                    self._peer_miss_counts[peer.agent_id] = 0
                 except Exception:
-                    pass
+                    misses = self._peer_miss_counts.get(peer.agent_id, 0) + 1
+                    self._peer_miss_counts[peer.agent_id] = misses
+                    if misses >= 3:
+                        self.session.remove_peer(peer.agent_id)
+                        self._peer_miss_counts.pop(peer.agent_id, None)
+                        await self._broadcast_event({
+                            "event": "peer_left",
+                            "peer_id": peer.agent_id,
+                        })
 
     # --- Outbound P2P Communication & Relay ---
 

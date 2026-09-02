@@ -6,7 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from crosslab.protocol.actions import ActionType, AgentRole
-from crosslab.protocol.models import HandshakeRequest, MessageEnvelope, SyncRunSignal
+from crosslab.protocol.models import AgentPeer, HandshakeRequest, MessageEnvelope, SyncRunSignal
 from crosslab.transport.node import A2ANode
 
 
@@ -65,3 +65,35 @@ async def test_a2a_node_endpoints() -> None:
         summary = res.json()
         assert summary["session_id"] == "test-session"
         assert summary["peers_count"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_a2a_node_prunes_stale_peers_on_startup(tmp_path) -> None:
+    db_path = str(tmp_path / "stale-peers.db")
+    node = A2ANode(
+        agent_id="host-agent",
+        role=AgentRole.HOST,
+        session_id="test-session",
+        db_path=db_path,
+    )
+    node.session.register_peer(
+        AgentPeer(
+            agent_id="client-agent",
+            role=AgentRole.CLIENT,
+            endpoint_url="http://127.0.0.1:8766",
+        )
+    )
+    node.session.close()
+
+    restarted = A2ANode(
+        agent_id="host-agent",
+        role=AgentRole.HOST,
+        session_id="test-session",
+        db_path=db_path,
+    )
+
+    transport = ASGITransport(app=restarted.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/v1/a2a/peers")
+        assert res.status_code == 200
+        assert res.json() == []

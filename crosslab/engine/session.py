@@ -82,6 +82,12 @@ class InvestigationSession:
     def get_peers(self) -> List[AgentPeer]:
         return self.storage.get_peers(session_id=self.session_id)
 
+    def prune_remote_peers(self, keep_agent_id: str) -> None:
+        self.storage.clear_remote_peers(self.session_id, keep_agent_id)
+
+    def remove_peer(self, agent_id: str) -> None:
+        self.storage.remove_peer(agent_id, session_id=self.session_id)
+
     def record_message(self, msg: MessageEnvelope) -> None:
         msg.session_id = self.session_id
         self.storage.save_message(msg)

@@ -37,4 +37,5 @@ testpaths = ["tests"]
 dev = [
     "frida>=17.17.0",
     "frida-tools>=14.10.4",
+    "pyinstaller>=6.0.0",
 ]

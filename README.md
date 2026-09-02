@@ -104,6 +104,35 @@ uv run crosslab node --role host --port 8765 --session fear3-debug
 uv run crosslab node --role client --port 8766 --peer http://machine-a:8765 --session fear3-debug
 ```
 
+### 5. Desktop App (Tauri + Svelte)
+
+CrossLab ships a bundled desktop app for Windows with the same Host/Client flow, a native investigation HUD, and optional Classic HUD (legacy web dashboard).
+
+**Development:**
+```powershell
+cd desktop
+npm install
+npm run tauri:dev
+```
+
+**Release build (bundles Python node sidecar):**
+```powershell
+uv sync --all-extras
+.\scripts\build_sidecar.ps1
+cd desktop
+npm install
+npm run tauri:build
+```
+
+The installer is written to `desktop/src-tauri/target/release/bundle/`.
+
+**Desktop workflow:**
+1. Launch CrossLab on Machine A → choose **Host**, set session ID (e.g. `fear3-debug`), start session.
+2. Copy the LAN URL shown in the setup wizard.
+3. Launch CrossLab on Machine B → choose **Client**, enter the host peer URL, same session ID, start session.
+4. Use the HUD for chat, hypotheses, runs, and transcripts. Click **Classic HUD** to open the original web dashboard in a second window.
+5. Connect your agent's MCP bridge to `http://127.0.0.1:{port}` (see README MCP section).
+
 ---
 
 ## 🤖 MCP (Model Context Protocol) Server

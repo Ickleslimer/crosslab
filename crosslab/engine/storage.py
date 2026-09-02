@@ -274,6 +274,20 @@ class Storage:
                 for row in rows
             ]
 
+    def remove_peer(self, agent_id: str, session_id: str = "default") -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "DELETE FROM peers WHERE session_id = ? AND agent_id = ?",
+                (session_id, agent_id),
+            )
+
+    def clear_remote_peers(self, session_id: str, keep_agent_id: str) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "DELETE FROM peers WHERE session_id = ? AND agent_id != ?",
+                (session_id, keep_agent_id),
+            )
+
     # --- Messages ---
 
     def save_message(self, msg: MessageEnvelope) -> None:
