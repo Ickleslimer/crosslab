@@ -191,6 +191,58 @@ class CrossLabMCPServer:
                     "properties": {},
                 },
             },
+            {
+                "name": "crosslab_wait_for_message",
+                "description": (
+                    "Block until an inbound peer A2A message arrives (replaces manual poll timers). "
+                    "Returns the matching message envelope or {status: timeout}."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since_id": {"type": "string", "description": "Return only messages after this message_id"},
+                        "timeout_s": {"type": "number", "description": "Max seconds to wait", "default": 60},
+                        "actions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional action type filter e.g. ['chat', 'sync_ready']",
+                        },
+                        "exclude_self": {
+                            "type": "boolean",
+                            "description": "Exclude messages from this agent",
+                            "default": True,
+                        },
+                    },
+                },
+            },
+            {
+                "name": "crosslab_get_run_state",
+                "description": (
+                    "Get barrier coordination state for a synchronized test run. "
+                    "Returns phase (idle|paused|preparing|ready_wait|ready|running|completed|aborted), "
+                    "ready flags per role, start_authorized, pause_reason, and instrumentation metadata."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {"type": "integer", "description": "Run ID to query"},
+                    },
+                    "required": ["run_id"],
+                },
+            },
+            {
+                "name": "crosslab_send_sync_signal",
+                "description": "Send a structured run sync signal (ready, start, abort, etc.) instead of prose CHAT.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {"type": "integer"},
+                        "phase": {"type": "string", "description": "e.g. ready, start, abort, prepare"},
+                        "payload": {"type": "object", "description": "Optional metadata e.g. pid"},
+                    },
+                    "required": ["run_id", "phase"],
+                },
+            },
         ]
 
     async def execute_tool_async(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -310,6 +362,25 @@ class CrossLabMCPServer:
         elif name == "crosslab_get_transcript":
             text = await client.get_transcript()
             return {"status": "ok", "transcript": text}
+
+        elif name == "crosslab_wait_for_message":
+            return await client.wait_for_message(
+                since_id=arguments.get("since_id"),
+                timeout_s=arguments.get("timeout_s", 60.0),
+                actions=arguments.get("actions"),
+                exclude_self=arguments.get("exclude_self", True),
+            )
+
+        elif name == "crosslab_get_run_state":
+            state = await client.get_barrier_state(arguments["run_id"])
+            return {"status": "ok", "barrier": state}
+
+        elif name == "crosslab_send_sync_signal":
+            return await client.send_sync_signal(
+                run_id=arguments["run_id"],
+                phase=arguments["phase"],
+                payload=arguments.get("payload"),
+            )
 
         return {"error": f"Tool '{name}' not found"}
 

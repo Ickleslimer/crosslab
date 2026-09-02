@@ -329,6 +329,28 @@ class CrossLabClient:
             res = await client.post(f"{self.base_url}/v1/a2a/sync/reconcile", json=payload)
             return res.json()
 
+    async def get_barrier_state(self, run_id: int) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/runs/{run_id}/barrier")
+            res.raise_for_status()
+            return res.json()
+
+    async def wait_for_message(
+        self,
+        since_id: Optional[str] = None,
+        timeout_s: float = 60.0,
+        actions: Optional[List[str]] = None,
+        exclude_self: bool = True,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"timeout_s": timeout_s, "exclude_self": str(exclude_self).lower()}
+        if since_id:
+            params["since_id"] = since_id
+        if actions:
+            params["actions"] = ",".join(actions)
+        async with httpx.AsyncClient(timeout=timeout_s + 10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/messages/wait", params=params)
+            return res.json()
+
     async def get_transcript(self) -> str:
         """Fetch the live human-readable Markdown transcript from the node."""
         async with httpx.AsyncClient(timeout=10.0) as client:

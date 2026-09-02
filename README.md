@@ -154,6 +154,47 @@ uv run crosslab mcp --node-url http://127.0.0.1:8765
 - `crosslab_correlate_run`: Run multi-machine cross-log correlation to find sequence gaps and timing deltas.
 - `crosslab_query_investigation`: Query shared investigation state (unresolved hypotheses, latest reproduced run, diffs).
 - `crosslab_share_patch`: Share unified patches or diagnostic scripts across the network.
+- `crosslab_get_transcript`: Fetch the full human-readable Markdown investigation transcript.
+- `crosslab_wait_for_message`: Block until an inbound peer message arrives (replaces manual poll timers).
+- `crosslab_get_run_state`: Query barrier coordination state for a run (phase, ready flags, start_authorized).
+- `crosslab_send_sync_signal`: Send structured ready/start/abort sync signals.
+
+### Agent coordination (no poll timers)
+
+Instead of scheduling 60s REST poll loops, agents should:
+
+1. Call `crosslab_wait_for_message` at the end of a turn to block until the peer replies.
+2. Run the event watcher alongside the agent to trigger harness wakeup on inbound events:
+
+```powershell
+# Generic stdout wakeup (prints [CROSSLAB_WAKEUP] JSON lines)
+uv run crosslab watch --node-url http://127.0.0.1:8765 --wake stdout --verbose
+
+# Antigravity: writes %TEMP%\crosslab_wakeup.json + schedule-compatible stdout prompt
+uv run crosslab watch --wake antigravity --agent-id agent-host --role host
+
+# OpenCode: file hook at %TEMP%\crosslab_wakeup.json (inject follow-up from sidecar)
+uv run crosslab watch --wake opencode
+
+# Codex: POST to automation webhook
+uv run crosslab watch --wake codex --webhook http://127.0.0.1:9999/crosslab-wakeup
+```
+
+Set `CROSSLAB_HARNESS=antigravity|opencode|codex` and use `--wake auto` to pick the backend automatically.
+
+| Harness | Wakeup mode | Mechanism |
+| :--- | :--- | :--- |
+| Antigravity | `--wake antigravity` | File + stdout prompt for schedule hooks |
+| OpenCode | `--wake opencode` | Atomic write to `crosslab_wakeup.json` |
+| Codex | `--wake codex` | HTTP webhook POST |
+| Generic | `--wake stdout` | `[CROSSLAB_WAKEUP]` JSON on stdout |
+
+Query run barrier state before START:
+
+```powershell
+# MCP: crosslab_get_run_state(run_id=14)
+# REST: GET /v1/a2a/runs/14/barrier
+```
 
 ---
 

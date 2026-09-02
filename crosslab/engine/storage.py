@@ -321,41 +321,75 @@ class Storage:
             except Exception:
                 pass
 
-    def get_messages(self, session_id: str = "default", limit: Optional[int] = 100) -> List[MessageEnvelope]:
+    def _rows_to_messages(self, rows) -> List[MessageEnvelope]:
+        return [
+            MessageEnvelope(
+                message_id=row["message_id"],
+                session_id=row["session_id"],
+                conversation_id=row["conversation_id"],
+                sender_id=row["sender_id"],
+                origin_sender_id=row["origin_sender_id"],
+                recipient_id=row["recipient_id"],
+                timestamp=row["timestamp"],
+                monotonic_ns=row["monotonic_ns"] or 0,
+                hops=row["hops"] or 0,
+                action=row["action"],
+                natural_language=row["natural_language"],
+                payload=json.loads(row["payload"] or "{}"),
+            )
+            for row in rows
+        ]
+
+    def get_messages(
+        self,
+        session_id: str = "default",
+        limit: Optional[int] = 100,
+        since_id: Optional[str] = None,
+        actions: Optional[List[str]] = None,
+    ) -> List[MessageEnvelope]:
         with self._get_connection() as conn:
+            where_clauses = ["session_id = ?"]
+            params: List[Any] = [session_id]
+
+            if since_id:
+                anchor = conn.execute(
+                    "SELECT timestamp, monotonic_ns, message_id FROM messages WHERE message_id = ? AND session_id = ?",
+                    (since_id, session_id),
+                ).fetchone()
+                if anchor:
+                    where_clauses.append(
+                        "(timestamp > ? OR (timestamp = ? AND monotonic_ns > ?) "
+                        "OR (timestamp = ? AND monotonic_ns = ? AND message_id > ?))"
+                    )
+                    params.extend([
+                        anchor["timestamp"], anchor["timestamp"], anchor["monotonic_ns"] or 0,
+                        anchor["timestamp"], anchor["monotonic_ns"] or 0, anchor["message_id"],
+                    ])
+
+            if actions:
+                placeholders = ",".join("?" for _ in actions)
+                where_clauses.append(f"action IN ({placeholders})")
+                params.extend(actions)
+
+            where_sql = " AND ".join(where_clauses)
+            order_sql = "ORDER BY timestamp ASC, monotonic_ns ASC, message_id ASC"
+
             if limit is None:
                 rows = conn.execute(
-                    "SELECT * FROM messages WHERE session_id = ? "
-                    "ORDER BY timestamp ASC, monotonic_ns ASC, message_id ASC",
-                    (session_id,),
+                    f"SELECT * FROM messages WHERE {where_sql} {order_sql}",
+                    params,
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM (
-                        SELECT * FROM messages WHERE session_id = ?
+                        SELECT * FROM messages WHERE {where_sql}
                         ORDER BY timestamp DESC, monotonic_ns DESC, message_id DESC LIMIT ?
-                    ) ORDER BY timestamp ASC, monotonic_ns ASC, message_id ASC
+                    ) {order_sql}
                     """,
-                    (session_id, limit),
+                    [*params, limit],
                 ).fetchall()
-            return [
-                MessageEnvelope(
-                    message_id=row["message_id"],
-                    session_id=row["session_id"],
-                    conversation_id=row["conversation_id"],
-                    sender_id=row["sender_id"],
-                    origin_sender_id=row["origin_sender_id"],
-                    recipient_id=row["recipient_id"],
-                    timestamp=row["timestamp"],
-                    monotonic_ns=row["monotonic_ns"] or 0,
-                    hops=row["hops"] or 0,
-                    action=row["action"],
-                    natural_language=row["natural_language"],
-                    payload=json.loads(row["payload"] or "{}"),
-                )
-                for row in rows
-            ]
+            return self._rows_to_messages(rows)
 
     # --- Hypotheses & Evidence Graph ---
 

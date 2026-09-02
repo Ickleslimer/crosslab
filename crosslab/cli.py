@@ -94,6 +94,26 @@ def cmd_status(args: argparse.Namespace) -> None:
     console.print(table)
 
 
+def cmd_watch(args: argparse.Namespace) -> None:
+    from crosslab.agent.watcher import watch_events
+    from crosslab.agent.wakeup import create_wakeup_backend
+
+    backend = create_wakeup_backend(
+        args.wake,
+        webhook_url=args.webhook,
+        wake_file=args.wake_file,
+    )
+    asyncio.run(
+        watch_events(
+            node_url=args.node_url,
+            backend=backend,
+            agent_id=args.agent_id,
+            local_role_hint=args.role,
+            verbose=args.verbose,
+        )
+    )
+
+
 def cmd_transcript(args: argparse.Namespace) -> None:
     session = InvestigationSession(
         session_id=args.session,
@@ -161,6 +181,21 @@ def main() -> None:
     transcript_parser.add_argument("--transcript-dir", type=str, default=None, help="Directory to store transcripts")
     transcript_parser.add_argument("--print", dest="print_stdout", action="store_true", help="Print transcript to stdout")
 
+    # watch
+    watch_parser = subparsers.add_parser("watch", help="Watch A2A SSE events and wake the agent harness on peer activity")
+    watch_parser.add_argument("--node-url", type=str, default="http://127.0.0.1:8765", help="Local CrossLab node URL")
+    watch_parser.add_argument(
+        "--wake",
+        choices=["stdout", "file", "webhook", "antigravity", "opencode", "codex", "auto"],
+        default="stdout",
+        help="Wakeup backend (auto reads CROSSLAB_HARNESS env)",
+    )
+    watch_parser.add_argument("--webhook", type=str, default=None, help="Webhook URL for webhook/codex wakeup mode")
+    watch_parser.add_argument("--wake-file", type=str, default=None, help="Path for file-based wakeup (default: %%TEMP%%/crosslab_wakeup.json)")
+    watch_parser.add_argument("--agent-id", type=str, default="agent-local", help="Local agent ID for self-filtering")
+    watch_parser.add_argument("--role", type=str, default="host", choices=["host", "client"], help="Local role hint for peer detection")
+    watch_parser.add_argument("--verbose", action="store_true", help="Print full event details to stdout")
+
     args = parser.parse_args()
 
     if args.command == "demo":
@@ -176,6 +211,8 @@ def main() -> None:
         cmd_status(args)
     elif args.command == "transcript":
         cmd_transcript(args)
+    elif args.command == "watch":
+        cmd_watch(args)
     else:
         parser.print_help()
 

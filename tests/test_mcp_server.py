@@ -18,6 +18,8 @@ def test_mcp_tool_definitions() -> None:
     assert "crosslab_correlate_run" in tool_names
     assert "crosslab_query_investigation" in tool_names
     assert "crosslab_share_patch" in tool_names
+    assert "crosslab_wait_for_message" in tool_names
+    assert "crosslab_get_run_state" in tool_names
 
 
 def test_mcp_json_rpc_tools_list() -> None:

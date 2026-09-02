@@ -201,8 +201,18 @@ class InvestigationSession:
         except Exception:
             pass
 
-    def get_messages(self, limit: Optional[int] = 100) -> List[MessageEnvelope]:
-        return self.storage.get_messages(session_id=self.session_id, limit=limit)
+    def get_messages(
+        self,
+        limit: Optional[int] = 100,
+        since_id: Optional[str] = None,
+        actions: Optional[List[str]] = None,
+    ) -> List[MessageEnvelope]:
+        return self.storage.get_messages(
+            session_id=self.session_id,
+            limit=limit,
+            since_id=since_id,
+            actions=actions,
+        )
 
     # --- Hypotheses & Evidence Graph ---
 

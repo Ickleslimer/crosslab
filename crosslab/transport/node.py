@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 import httpx
 
 from crosslab.engine.session import InvestigationSession
+from crosslab.engine.barrier import BarrierCoordinator, BarrierState
 from crosslab.protocol.actions import ActionType, AgentRole
 from crosslab.protocol.models import (
     AgentCard,
@@ -41,6 +42,7 @@ from crosslab.protocol.models import (
     utc_now_iso,
 )
 from crosslab.transport.dashboard import DASHBOARD_HTML
+from crosslab.transport.message_wait import MessageWaitRegistry, MessageWaiter
 
 logger = logging.getLogger("crosslab.transport")
 
@@ -99,8 +101,12 @@ class A2ANode:
         self.session.register_peer(self.self_peer)
         self.session.prune_remote_peers(self.agent_id)
 
+        self.barrier = BarrierCoordinator(self.session)
+
         # SSE Subscribers
         self._subscribers: List[asyncio.Queue] = []
+        # Long-poll message waiters
+        self._message_waiters = MessageWaitRegistry()
         # Action Event Handlers
         self._action_handlers: Dict[ActionType, List[Callable[[MessageEnvelope], Any]]] = {}
         # Seen message IDs for deduplication & echo loop prevention
@@ -274,18 +280,71 @@ class A2ANode:
             return {"status": "received", "message_id": envelope.message_id}
 
         @app.get("/v1/a2a/messages", response_model=List[MessageEnvelope])
-        async def get_messages(limit: int = 100) -> List[MessageEnvelope]:
+        async def get_messages(
+            limit: int = 100,
+            since_id: Optional[str] = None,
+            actions: Optional[str] = None,
+        ) -> List[MessageEnvelope]:
+            action_list = [a.strip() for a in actions.split(",") if a.strip()] if actions else None
             if self.initial_peer_url and self.role != AgentRole.HOST:
                 try:
                     async with httpx.AsyncClient(timeout=3.0) as client:
-                        resp = await client.get(f"{self.initial_peer_url.rstrip('/')}/v1/a2a/messages?limit={limit}")
+                        params: Dict[str, Any] = {"limit": limit}
+                        if since_id:
+                            params["since_id"] = since_id
+                        if actions:
+                            params["actions"] = actions
+                        resp = await client.get(
+                            f"{self.initial_peer_url.rstrip('/')}/v1/a2a/messages",
+                            params=params,
+                        )
                         if resp.status_code == 200:
                             for m_data in resp.json():
                                 env = MessageEnvelope(**m_data)
                                 await self._ingest_message(env)
                 except Exception:
                     pass
-            return self.session.get_messages(limit=limit)
+            return self.session.get_messages(limit=limit, since_id=since_id, actions=action_list)
+
+        @app.get("/v1/a2a/messages/wait")
+        async def wait_for_message(
+            since_id: Optional[str] = None,
+            timeout_s: float = 60.0,
+            actions: Optional[str] = None,
+            exclude_self: bool = True,
+        ) -> Dict[str, Any]:
+            action_list = {a.strip() for a in actions.split(",") if a.strip()} if actions else None
+            ordered = self.session.get_messages(limit=None)
+            exclude_id = self.agent_id if exclude_self else None
+
+            for msg in ordered:
+                from crosslab.transport.message_wait import message_matches_filters
+                if message_matches_filters(
+                    msg,
+                    since_id=since_id,
+                    actions=action_list,
+                    exclude_agent_id=exclude_id,
+                    ordered_messages=ordered,
+                ):
+                    return {"status": "ok", "message": msg.model_dump()}
+
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future = loop.create_future()
+            waiter = MessageWaiter(
+                since_id=since_id,
+                actions=action_list,
+                exclude_agent_id=exclude_id,
+                future=future,
+                ordered_messages=ordered,
+            )
+            self._message_waiters.register(waiter)
+            try:
+                msg = await asyncio.wait_for(future, timeout=timeout_s)
+                return {"status": "ok", "message": msg.model_dump()}
+            except asyncio.TimeoutError:
+                return {"status": "timeout"}
+            finally:
+                self._message_waiters.unregister(waiter)
 
         @app.get("/v1/a2a/events")
         async def sse_events(request: Request) -> StreamingResponse:
@@ -312,6 +371,7 @@ class A2ANode:
         async def sync_run(signal: SyncRunSignal) -> Dict[str, Any]:
             signal.session_id = self.session_id
             logger.info(f"[{self.agent_id}] Run {signal.run_id} sync signal: phase='{signal.phase}' from {signal.sender_id}")
+            self.barrier.on_sync_signal(signal)
             await self._broadcast_event({
                 "event": "sync_signal",
                 "signal": signal.model_dump(),
@@ -338,6 +398,13 @@ class A2ANode:
             if not run:
                 raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
             return run
+
+        @app.get("/v1/a2a/runs/{run_id}/barrier", response_model=BarrierState)
+        async def get_run_barrier(run_id: int) -> BarrierState:
+            try:
+                return self.barrier.get_barrier_state(run_id)
+            except KeyError:
+                raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
 
         @app.get("/v1/a2a/correlate/{run_id}", response_model=CorrelationResult)
         async def correlate_run(run_id: int) -> CorrelationResult:
@@ -447,6 +514,7 @@ class A2ANode:
 
         self.session.record_message(envelope)
         self._seen_message_ids.add(envelope.message_id)
+        self.barrier.on_message(envelope)
         logger.info(
             f"[{self.agent_id}] Ingested message {envelope.message_id} "
             f"from {envelope.sender_id}: {envelope.action.value}"
@@ -464,6 +532,7 @@ class A2ANode:
             "event": "message",
             "envelope": envelope.model_dump(),
         })
+        self._message_waiters.notify(envelope)
         return True
 
     def on_action(self, action: ActionType, handler: Callable[[MessageEnvelope], Any]) -> None:
