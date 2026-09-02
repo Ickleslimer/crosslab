@@ -26,6 +26,12 @@ build/
 *.db-journal
 *.sqlite
 *.sqlite3
+transcripts/
+
+# Local investigation scratch & run artifacts
+scratch_*.py
+disasm_*.js
+*.err
 
 # Binaries & runtime artifacts
 cloudflared.exe
@@ -33,6 +39,7 @@ cloudflared.exe
 
 .idea/
 .vscode/
+.codegraph/
 *.swp
 *.swo
 .DS_Store
