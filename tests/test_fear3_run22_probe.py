@@ -23,6 +23,7 @@ def test_run22_is_entry_only_and_stalker_free() -> None:
     assert "fear3_breadcrumb_relative_448653" not in source
     assert "retval.replace(" not in source
     assert "CloseP2PSessionWithUser" not in source
+    assert "reduce instrumentation risk" in source
 
 
 def test_run22_preflight_is_pinned_to_reviewed_images_and_entry_bytes() -> None:
@@ -50,12 +51,12 @@ def test_run22_hooks_target_vtable_slot_5_with_fail_closed_rollback() -> None:
     assert "run22InstalledListeners.pop()" in source
 
 
-def test_run22_captures_immediate_return_address_and_bounded_backtrace() -> None:
+def test_run22_captures_immediate_return_address_and_bounded_backtrace_with_synchronous_latch() -> None:
     source = PROBE_RUN22.read_text(encoding="utf-8")
 
-    # Immediate returnAddress capture before any other calls
-    assert "if (run22Finished) {\n            return;\n        }\n        const retAddr = this.returnAddress;\n        const channel = args[2].toInt32();" in source
+    assert "if (run22Finished || run22Captured) {\n            return;\n        }\n        const retAddr = this.returnAddress;\n        const channel = args[2].toInt32();" in source
     assert "if (channel !== 4101) {\n            return;\n        }" in source
+    assert "if (run22Captured) {\n            return;\n        }\n        run22Captured = true;" in source
     assert "Process.findModuleByAddress(retAddr)" in source
     assert "retAddr.sub(owner.base)" in source
     assert "Thread.backtrace(context, Backtracer.ACCURATE)" in source
@@ -63,9 +64,14 @@ def test_run22_captures_immediate_return_address_and_bounded_backtrace() -> None
     assert "Run22CloseP2PChannelEvidence" in source
 
 
-def test_run22_detaches_and_clears_timer_on_channel_4101() -> None:
+def test_run22_timer_initialized_before_hook_installation() -> None:
     source = PROBE_RUN22.read_text(encoding="utf-8")
 
+    timer_pos = source.find("timeoutGuard = setTimeout")
+    attach_pos = source.find("requiredAttach(closeChannelTarget")
+    assert timer_pos != -1
+    assert attach_pos != -1
+    assert timer_pos < attach_pos, "Timeout guard must be armed before installing the live hook"
     assert "clearTimeout(timeoutGuard)" in source
     assert "timeoutGuard = null" in source
     assert 'cleanupRun22("control channel 4101 captured")' in source
@@ -79,5 +85,5 @@ def test_run22_probe_hashes_match_reviewed_candidate() -> None:
     ).hexdigest()
     sha256 = hashlib.sha256(canonical).hexdigest()
 
-    assert git_blob == "e1b903c47cf24f42ea51991ac4cb217fa6df2d72"
-    assert sha256 == "ca7205399202904e768e5600f6d120601f86c64ee9a4289833c3fd5184dde097"
+    assert git_blob == "b3865b142040b10252aec381a71e234210e54818"
+    assert sha256 == "4addf0b431b54f0df1bedc7a88eeda6fcafdd397483e467cb88b58e84e6373e0"

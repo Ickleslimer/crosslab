@@ -2,7 +2,7 @@
  * FEAR 3 Steam P2P Diagnostic Probe - Run 22 (Entry-Only Caller Evidence)
  * 
  * Strict entry-only Interceptor instrumentation targeting CloseP2PChannelWithUser (Slot 5).
- * Completely eliminates Stalker and mid-function hooks to guarantee stability.
+ * Completely eliminates Stalker and mid-function hooks to reduce instrumentation risk.
  * 
  * Usage:
  *   frida -n "F.E.A.R. 3.exe" -l fear3_run22_probe.js
@@ -114,6 +114,7 @@ try {
 
 const run22InstalledListeners = [];
 let run22Finished = false;
+let run22Captured = false;
 let timeoutGuard = null;
 
 const cleanupRun22 = function(reason) {
@@ -218,10 +219,15 @@ if (!bytesMatch(closeChannelTarget, run22ReviewedManifest.steamclient.closeChann
 }
 console.log(`[CrossLab Probe] Run22 live-owner preflight OK target=${closeChannelTarget} authority=${closeOwner.name}+0x${closeTargetRva.toString(16)} entry_bytes=OK`);
 
+// Arm the 180s Safety Timeout Guard BEFORE hook installation (fail-closed will clear it on error)
+timeoutGuard = setTimeout(function() {
+    cleanupRun22("180s safety timeout reached");
+}, 180000);
+
 // Primary Run 22 Hook: CloseP2PChannelWithUser (Slot 5)
 requiredAttach(closeChannelTarget, "Run22 CloseP2PChannelWithUser target", {
     onEnter: function(args) {
-        if (run22Finished) {
+        if (run22Finished || run22Captured) {
             return;
         }
         const retAddr = this.returnAddress;
@@ -231,6 +237,12 @@ requiredAttach(closeChannelTarget, "Run22 CloseP2PChannelWithUser target", {
         if (channel !== 4101) {
             return;
         }
+
+        // Synchronous latch: claim one-shot capture immediately before any async or stack work
+        if (run22Captured) {
+            return;
+        }
+        run22Captured = true;
 
         const nowMs = Date.now();
         const tid = Process.getCurrentThreadId();
@@ -267,10 +279,5 @@ requiredAttach(closeChannelTarget, "Run22 CloseP2PChannelWithUser target", {
         });
     }
 });
-
-// Hard 180s Safety Timeout Guard (from script attachment immediately before START)
-timeoutGuard = setTimeout(function() {
-    cleanupRun22("180s safety timeout reached");
-}, 180000);
 
 console.log("[CrossLab Probe] Run 22 probe attached successfully. Waiting for channel 4101 event...");
