@@ -66,6 +66,17 @@ class InvestigationSession:
         if self.storage.db_path != ":memory:":
             save_harness_links(self.data_dir, links)
 
+    def get_agent_profile(self):
+        from crosslab.engine.agent_profile import AgentProfile, load_agent_profile, resolve_local_profile
+        if self.storage.db_path == ":memory:":
+            return resolve_local_profile(AgentProfile())
+        return resolve_local_profile(load_agent_profile(self.data_dir))
+
+    def save_agent_profile(self, profile) -> None:
+        from crosslab.engine.agent_profile import save_agent_profile
+        if self.storage.db_path != ":memory:":
+            save_agent_profile(self.data_dir, profile)
+
     def get_transcript_path(self) -> Optional[str]:
         """Return the absolute path to the session's live Markdown transcript file."""
         recorder = self.storage.get_transcript_recorder(self.session_id)

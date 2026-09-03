@@ -60,6 +60,15 @@ export interface FrictionHeatmap {
   csv_path?: string;
 }
 
+export interface AgentProfile {
+  harness?: string | null;
+  model_id?: string | null;
+  model_display?: string | null;
+  source?: string;
+  confidence?: number;
+  updated_at?: string;
+}
+
 export interface AgentPeer {
   agent_id: string;
   role: string;
@@ -67,6 +76,11 @@ export interface AgentPeer {
   clock_offset_ms: number;
   topology_warning?: string | null;
   rtt_ms?: number;
+  metadata?: { agent_profile?: AgentProfile };
+  harness?: string | null;
+  model_id?: string | null;
+  model_display?: string | null;
+  profile_confidence?: number;
 }
 
 export interface MessageEnvelope {
@@ -128,6 +142,13 @@ export function createApi(port: number) {
     health: () => fetchJson<HealthResponse>(`${base}/health`),
     summary: () => fetchJson<SessionSummary>(`${base}/v1/a2a/summary`),
     peers: () => fetchJson<AgentPeer[]>(`${base}/v1/a2a/peers/detailed`),
+    profile: () => fetchJson<AgentProfile>(`${base}/v1/a2a/session/profile`),
+    putProfile: (profile: Partial<AgentProfile>) =>
+      fetchJson<AgentProfile>(`${base}/v1/a2a/session/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(profile)
+      }),
     manifest: () => fetchJson<HarnessLinks>(`${base}/v1/a2a/session/manifest`),
     putManifest: (links: HarnessLinks) =>
       fetchJson<HarnessLinks>(`${base}/v1/a2a/session/manifest`, {

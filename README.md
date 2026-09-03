@@ -166,6 +166,27 @@ uv run crosslab probe-ledger --node-url http://127.0.0.1:8766 --peer http://192.
 
 Supported harnesses: `cursor`, `claude-desktop`, `antigravity`, `codex`, `opencode`.
 
+### Agent profile (harness + model visibility)
+
+Peers can see each other's harness and model after handshake. Set identity via environment variables, REST, or MCP:
+
+```powershell
+# Environment (applied on node startup)
+$env:CROSSLAB_HARNESS = "codex"
+$env:CROSSLAB_AGENT_MODEL = "gpt-5.6-sol"
+$env:CROSSLAB_AGENT_MODEL_DISPLAY = "GPT Sol 5.6"
+
+# REST
+# GET  /v1/a2a/session/profile
+# PUT  /v1/a2a/session/profile  {"harness":"codex","model_display":"GPT Sol 5.6"}
+
+# MCP (at session start)
+# crosslab_set_agent_profile(harness="codex", model_display="GPT Sol 5.6")
+# crosslab_get_peer_profiles()
+```
+
+`mcp install --harness codex` pre-fills `CROSSLAB_HARNESS` in the generated MCP env block.
+
 ### Harness thread linking (CodeTalker / OpenCode)
 
 Link external harness session IDs to a CrossLab investigation via the desktop Setup Wizard or MCP `crosslab_set_harness_link`. This is especially useful when CodeTalker cannot discover an OpenCode thread by project name — see [docs/codetalker-opencode.md](docs/codetalker-opencode.md).
@@ -185,6 +206,9 @@ Link external harness session IDs to a CrossLab investigation via the desktop Se
 - `crosslab_wait_for_message`: Block until an inbound peer message arrives (replaces manual poll timers).
 - `crosslab_get_run_state`: Query barrier coordination state for a run (phase, ready flags, start_authorized).
 - `crosslab_send_sync_signal`: Send structured ready/start/abort sync signals.
+- `crosslab_get_agent_profile`: Get this node's harness and model identity.
+- `crosslab_set_agent_profile`: Set harness/model identity visible to peers.
+- `crosslab_get_peer_profiles`: List remote peers with their harness and model.
 
 ### Agent coordination (no poll timers)
 

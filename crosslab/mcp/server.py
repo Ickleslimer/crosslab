@@ -266,6 +266,28 @@ class CrossLabMCPServer:
                 },
             },
             {
+                "name": "crosslab_get_agent_profile",
+                "description": "Get this node's harness and model identity for peer visibility.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "crosslab_set_agent_profile",
+                "description": "Set this node's harness and model identity (self-reported, visible to peers after handshake).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "harness": {"type": "string", "description": "Harness name e.g. codex, cursor, antigravity"},
+                        "model_id": {"type": "string", "description": "Machine-readable model ID"},
+                        "model_display": {"type": "string", "description": "Human-readable model label"},
+                    },
+                },
+            },
+            {
+                "name": "crosslab_get_peer_profiles",
+                "description": "List connected remote peers with their harness and model identity.",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
                 "name": "crosslab_request_human_repro",
                 "description": "Request structured human reproduction steps for a run.",
                 "inputSchema": {
@@ -459,6 +481,24 @@ class CrossLabMCPServer:
         elif name == "crosslab_set_harness_link":
             links = await client.set_harness_link(arguments["harness"], arguments["thread_id"])
             return {"status": "ok", "links": links}
+
+        elif name == "crosslab_get_agent_profile":
+            profile = await client.get_agent_profile()
+            return {"status": "ok", "profile": profile}
+
+        elif name == "crosslab_set_agent_profile":
+            if not any(arguments.get(k) for k in ("harness", "model_id", "model_display")):
+                return {"error": "At least one of harness, model_id, or model_display is required"}
+            profile = await client.set_agent_profile(
+                harness=arguments.get("harness"),
+                model_id=arguments.get("model_id"),
+                model_display=arguments.get("model_display"),
+            )
+            return {"status": "ok", "profile": profile}
+
+        elif name == "crosslab_get_peer_profiles":
+            peers = await client.get_peer_profiles()
+            return {"status": "ok", "peers": peers}
 
         elif name == "crosslab_request_human_repro":
             return await client.request_human_repro(

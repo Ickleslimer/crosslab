@@ -22,6 +22,7 @@ from crosslab.engine.session import InvestigationSession
 from crosslab.engine.barrier import BarrierCoordinator, BarrierState
 from crosslab.engine.friction_heatmap import build_heatmap_matrix
 from crosslab.engine.manifest import HarnessLinks
+from crosslab.engine.agent_profile import AgentProfile, peer_profile_from_metadata
 from crosslab.engine.observability import build_observability_report
 from crosslab.engine.probe_validation import validate_instrumentation_payload
 from crosslab.engine.runbook import RunbookCoordinator, RunbookState
@@ -112,6 +113,9 @@ class A2ANode:
             machine_name=self.machine_name,
             capabilities=self.agent_card.capabilities,
         )
+
+        self.agent_profile = self.session.get_agent_profile()
+        self._apply_profile_to_self()
         self.session.register_peer(self.self_peer)
         self.session.prune_remote_peers(self.agent_id)
 
@@ -192,14 +196,16 @@ class A2ANode:
                     continue
                 metrics = self._peer_metrics.get(peer.agent_id, {})
                 warn = topology_warning(self.machine_name, peer)
-                peer_health.append({
+                entry = {
                     "agent_id": peer.agent_id,
                     "endpoint_url": peer.endpoint_url,
                     "machine_name": peer.machine_name,
                     "rtt_ms": metrics.get("rtt_ms"),
                     "clock_skew_ms": metrics.get("offset_ms"),
                     "topology_warning": warn,
-                })
+                }
+                entry.update(self._peer_profile_fields(peer))
+                peer_health.append(entry)
             obs = build_observability_report(self.session, self.agent_id)
             observability_ok = obs.get("ok", True)
             if self.role in (AgentRole.HOST, AgentRole.CLIENT) and obs.get("peer_count", 0) == 0:
@@ -213,6 +219,7 @@ class A2ANode:
                 "version": "0.2.0",
                 "advertised_url": self.endpoint_url,
                 "advertised_reachable_externally": not is_loopback_url(self.endpoint_url),
+                "agent_profile": self.agent_profile.model_dump(),
                 "peers": peer_health,
                 "observability_ok": observability_ok,
                 "last_message_age_s": obs.get("last_message_age_s"),
@@ -238,12 +245,16 @@ class A2ANode:
 
         @app.post("/v1/a2a/handshake", response_model=HandshakeResponse)
         async def handshake(req: HandshakeRequest) -> HandshakeResponse:
+            peer_metadata: Dict[str, Any] = {}
+            if req.agent_card and req.agent_card.metadata:
+                peer_metadata = dict(req.agent_card.metadata)
             peer = AgentPeer(
                 agent_id=req.agent_id,
                 role=req.role,
                 endpoint_url=req.endpoint_url,
                 machine_name=req.machine_name,
                 capabilities=req.capabilities,
+                metadata=peer_metadata,
             )
             self.session.register_peer(peer)
             self._peer_miss_counts[req.agent_id] = 0
@@ -294,6 +305,7 @@ class A2ANode:
                 data["rtt_ms"] = metrics.get("rtt_ms")
                 data["clock_skew_ms"] = metrics.get("offset_ms")
                 data["topology_warning"] = topology_warning(self.machine_name, peer)
+                data.update(self._peer_profile_fields(peer))
                 result.append(data)
             return result
 
@@ -610,6 +622,25 @@ class A2ANode:
             self.session.save_harness_links(links)
             return self.session.get_harness_links()
 
+        @app.get("/v1/a2a/session/profile", response_model=AgentProfile)
+        async def get_session_profile() -> AgentProfile:
+            return self.agent_profile
+
+        @app.put("/v1/a2a/session/profile", response_model=AgentProfile)
+        async def put_session_profile(body: AgentProfile) -> AgentProfile:
+            updated = AgentProfile(**self.agent_profile.model_dump())
+            updated.apply_manual(
+                harness=body.harness,
+                model_id=body.model_id,
+                model_display=body.model_display,
+            )
+            if not updated.is_set():
+                raise HTTPException(status_code=400, detail="At least one of harness, model_id, or model_display is required")
+            self.agent_profile = updated
+            self.session.save_agent_profile(updated)
+            self._apply_profile_to_self()
+            return self.agent_profile
+
         @app.get("/v1/a2a/runbook", response_model=RunbookState)
         async def get_runbook(run_id: Optional[int] = None) -> RunbookState:
             coordinator = RunbookCoordinator(self.session)
@@ -701,6 +732,24 @@ class A2ANode:
         self._action_handlers[action].append(handler)
 
     # --- Background Loops & Peer Management ---
+
+    def _apply_profile_to_self(self) -> None:
+        profile_data = self.agent_profile.model_dump()
+        self.agent_card.metadata["agent_profile"] = profile_data
+        self.self_peer.metadata["agent_profile"] = profile_data
+        self.session.register_peer(self.self_peer)
+
+    @staticmethod
+    def _peer_profile_fields(peer: AgentPeer) -> Dict[str, Any]:
+        profile = peer_profile_from_metadata(peer.metadata)
+        if not profile:
+            return {}
+        return {
+            "harness": profile.harness,
+            "model_id": profile.model_id,
+            "model_display": profile.model_display,
+            "profile_confidence": profile.confidence,
+        }
 
     async def _connect_peer_loop(self, peer_url: str) -> None:
         await asyncio.sleep(0.2)
@@ -883,13 +932,16 @@ class A2ANode:
             response_raw.raise_for_status()
             response = HandshakeResponse(**response_raw.json())
 
-            # Register remote peer locally
+            remote_metadata: Dict[str, Any] = {}
+            if response.agent_card and response.agent_card.metadata:
+                remote_metadata = dict(response.agent_card.metadata)
+
             remote_peer = AgentPeer(
                 agent_id=response.agent_id,
                 role=response.role,
                 endpoint_url=peer_url,
+                metadata=remote_metadata,
             )
-            # Register remote peers
             for p in response.peers:
                 if p.agent_id != self.agent_id:
                     self.session.register_peer(p)

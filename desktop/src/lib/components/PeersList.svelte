@@ -2,6 +2,17 @@
   import type { AgentPeer } from '$lib/api/client';
 
   let { peers = [] }: { peers?: AgentPeer[] } = $props();
+
+  function profileLabel(peer: AgentPeer): string | null {
+    const profile = peer.metadata?.agent_profile;
+    const harness = peer.harness ?? profile?.harness;
+    const model = peer.model_display ?? profile?.model_display ?? peer.model_id ?? profile?.model_id;
+    const confidence = peer.profile_confidence ?? profile?.confidence ?? 1.0;
+    if (!harness && !model) return null;
+    const prefix = confidence < 1 ? '~' : '';
+    if (harness && model) return `${prefix}${harness} · ${model}`;
+    return `${prefix}${harness ?? model}`;
+  }
 </script>
 
 <div class="glass-panel rounded-xl p-4">
@@ -17,6 +28,9 @@
               <span class="w-2 h-2 rounded-full {peer.role === 'host' ? 'bg-blue-400' : 'bg-purple-400'}"></span>
               {peer.agent_id}
             </div>
+            {#if profileLabel(peer)}
+              <div class="text-cyan-300/90 text-[11px] mt-0.5">{profileLabel(peer)}</div>
+            {/if}
             <div class="text-gray-400 text-[11px]">{peer.endpoint_url}</div>
             {#if peer.topology_warning}
               <div class="text-amber-400 text-[10px] mt-1">{peer.topology_warning}</div>

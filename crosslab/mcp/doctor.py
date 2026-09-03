@@ -56,6 +56,37 @@ async def run_doctor(
                             False,
                             warning,
                         )
+
+                local_profile = health.get("agent_profile") or {}
+                has_local = bool(local_profile.get("model_id") or local_profile.get("model_display"))
+                add_check(
+                    "agent_profile",
+                    True,
+                    (
+                        f"{local_profile.get('harness', '?')} / {local_profile.get('model_display') or local_profile.get('model_id')}"
+                        if has_local
+                        else "Unset — set via CROSSLAB_AGENT_MODEL or crosslab_set_agent_profile"
+                    ),
+                )
+                if not has_local:
+                    results["checks"][-1]["ok"] = True
+
+                for peer in peers:
+                    agent_id = peer.get("agent_id", "unknown")
+                    if peer.get("model_display") or peer.get("model_id"):
+                        label = peer.get("model_display") or peer.get("model_id")
+                        harness = peer.get("harness") or "?"
+                        add_check(
+                            f"peer_profile:{agent_id}",
+                            True,
+                            f"{harness} / {label}",
+                        )
+                    else:
+                        add_check(
+                            f"peer_profile:{agent_id}",
+                            True,
+                            "No profile reported by peer",
+                        )
             else:
                 add_check("node_health", False, f"HTTP {res.status_code}")
     except Exception as e:

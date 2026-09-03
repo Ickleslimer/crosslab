@@ -223,11 +223,16 @@ class TranscriptRecorder:
         if peers:
             md.append("## Participating Agents & Roles")
             md.append("")
-            md.append("| Agent ID | Role | Machine | Endpoint |")
-            md.append("| :--- | :--- | :--- | :--- |")
+            md.append("| Agent ID | Role | Harness | Model | Machine | Endpoint |")
+            md.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
             for p in peers:
                 role_str = p.role.value if hasattr(p.role, "value") else str(p.role)
-                md.append(f"| `{p.agent_id}` | **{role_str}** | {p.machine_name or 'N/A'} | `{p.endpoint_url}` |")
+                profile = (p.metadata or {}).get("agent_profile") or {}
+                harness = profile.get("harness") or "—"
+                model = profile.get("model_display") or profile.get("model_id") or "—"
+                md.append(
+                    f"| `{p.agent_id}` | **{role_str}** | {harness} | {model} | {p.machine_name or 'N/A'} | `{p.endpoint_url}` |"
+                )
             md.append("")
             md.append("---")
             md.append("")

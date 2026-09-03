@@ -363,6 +363,52 @@ class CrossLabClient:
             res.raise_for_status()
             return res.json()
 
+    async def get_agent_profile(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/session/profile")
+            res.raise_for_status()
+            return res.json()
+
+    async def set_agent_profile(
+        self,
+        *,
+        harness: Optional[str] = None,
+        model_id: Optional[str] = None,
+        model_display: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        from crosslab.engine.agent_profile import AgentProfile
+
+        current = await self.get_agent_profile()
+        body = AgentProfile(**current)
+        body.apply_manual(harness=harness, model_id=model_id, model_display=model_display)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.put(f"{self.base_url}/v1/a2a/session/profile", json=body.model_dump())
+            res.raise_for_status()
+            return res.json()
+
+    async def get_peer_profiles(self) -> List[Dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"{self.base_url}/v1/a2a/peers/detailed")
+            res.raise_for_status()
+            peers = res.json()
+        result = []
+        for peer in peers:
+            profile = (peer.get("metadata") or {}).get("agent_profile") or {}
+            if not profile and peer.get("harness"):
+                profile = {
+                    "harness": peer.get("harness"),
+                    "model_id": peer.get("model_id"),
+                    "model_display": peer.get("model_display"),
+                    "confidence": peer.get("profile_confidence", 1.0),
+                }
+            result.append({
+                "agent_id": peer.get("agent_id"),
+                "role": peer.get("role"),
+                "endpoint_url": peer.get("endpoint_url"),
+                "agent_profile": profile,
+            })
+        return result
+
     async def set_harness_link(self, harness: str, thread_id: str) -> Dict[str, Any]:
         links = await self.get_harness_links()
         from crosslab.engine.manifest import HarnessLinks

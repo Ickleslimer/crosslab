@@ -21,16 +21,23 @@ POST_INSTALL_HINTS: Dict[str, str] = {
 }
 
 
-def _crosslab_server_entry(node_url: str, project_root: Optional[str] = None) -> Dict[str, Any]:
+def _crosslab_server_entry(
+    node_url: str,
+    project_root: Optional[str] = None,
+    harness: Optional[str] = None,
+) -> Dict[str, Any]:
     args = ["run", "crosslab", "mcp", "--node-url", node_url]
     if project_root:
         args = ["run", "--directory", project_root, "crosslab", "mcp", "--node-url", node_url]
+    env: Dict[str, str] = {
+        "CROSSLAB_NODE_URL": node_url,
+    }
+    if harness:
+        env["CROSSLAB_HARNESS"] = harness
     return {
         "command": "uv",
         "args": args,
-        "env": {
-            "CROSSLAB_NODE_URL": node_url,
-        },
+        "env": env,
     }
 
 
@@ -43,7 +50,7 @@ def render_config(
     if harness not in SUPPORTED_HARNESSES:
         raise ValueError(f"Unsupported harness '{harness}'. Choose from: {', '.join(SUPPORTED_HARNESSES)}")
 
-    entry = _crosslab_server_entry(node_url, project_root)
+    entry = _crosslab_server_entry(node_url, project_root, harness=harness)
 
     if harness == "antigravity":
         return {"crosslab": entry}
