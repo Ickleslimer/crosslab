@@ -93,14 +93,17 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 def cmd_detect_profile(args: argparse.Namespace) -> None:
     from crosslab.engine.harness_probes import detect_summary
+    from crosslab.engine.harness_probes.cursor_ide import probe_cursor_ide
 
     harness_hint = args.harness or os.environ.get("CROSSLAB_HARNESS")
     candidates, selected = detect_summary(harness_hint=harness_hint or None)
+    cursor_ide = probe_cursor_ide()
 
     if args.json:
         payload = {
             "candidates": [c.to_dict() for c in candidates],
             "selected": selected.model_dump() if selected else None,
+            "cursor_ide": cursor_ide.to_dict() if cursor_ide else None,
         }
         print(json.dumps(payload, indent=2))
         return
@@ -110,11 +113,18 @@ def cmd_detect_profile(args: argparse.Namespace) -> None:
     table.add_column("Model", style="white")
     table.add_column("Config", style="white")
 
-    if not candidates:
+    rows = list(candidates)
+    if not rows and not cursor_ide:
         console.print("[yellow]No Tier A harness config detected.[/yellow]")
     else:
-        for candidate in candidates:
+        for candidate in rows:
             table.add_row(candidate.harness, candidate.model_display, str(candidate.config_path))
+        if cursor_ide:
+            table.add_row(
+                "cursor-ide",
+                cursor_ide.model_display,
+                str(cursor_ide.config_path),
+            )
         console.print(table)
 
     if selected and selected.is_set():

@@ -291,7 +291,9 @@ class CrossLabMCPServer:
                 "name": "crosslab_detect_agent_profile",
                 "description": (
                     "Probe local Codex/OpenCode/Cursor CLI configs for harness model identity. "
-                    "Returns candidates and selected profile; optional apply writes to node when profile is unset."
+                    "Always includes a cursor_ide diagnostic from Cursor IDE state.vscdb. "
+                    "Cursor IDE auto-apply requires CROSSLAB_PROBE_CURSOR_IDE=1. "
+                    "Optional apply writes to node when profile is unset."
                 ),
                 "inputSchema": {
                     "type": "object",

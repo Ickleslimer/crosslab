@@ -28,13 +28,14 @@ class ProbeResult:
     model_display: str
     config_path: Path
     confidence: float = 0.9
+    source: str = "config_file"
 
     def to_agent_profile(self) -> AgentProfile:
         return AgentProfile(
             harness=self.harness,
             model_id=self.model_id,
             model_display=self.model_display,
-            source="config_file",
+            source=self.source,
             confidence=self.confidence,
         )
 
@@ -45,6 +46,7 @@ class ProbeResult:
             "model_display": self.model_display,
             "config_path": str(self.config_path),
             "confidence": self.confidence,
+            "source": self.source,
         }
 
 

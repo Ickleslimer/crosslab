@@ -417,13 +417,16 @@ class CrossLabClient:
         import os
 
         from crosslab.engine.harness_probes import detect_summary
+        from crosslab.engine.harness_probes.cursor_ide import probe_cursor_ide
 
         harness_hint = harness or os.environ.get("CROSSLAB_HARNESS")
         candidates, selected = detect_summary(harness_hint=harness_hint or None)
+        cursor_ide = probe_cursor_ide()
         payload: Dict[str, Any] = {
             "status": "ok",
             "candidates": [c.to_dict() for c in candidates],
             "selected": selected.model_dump() if selected else None,
+            "cursor_ide": cursor_ide.to_dict() if cursor_ide else None,
             "applied": False,
         }
 

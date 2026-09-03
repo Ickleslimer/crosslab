@@ -37,6 +37,29 @@ def _add_profile_probe_checks(
                 "No config found",
             )
 
+    from crosslab.engine.harness_probes.cursor_ide import (
+        cursor_ide_enabled,
+        cursor_state_db_path,
+        probe_cursor_ide,
+    )
+
+    ide = probe_cursor_ide()
+    if ide:
+        flag_note = "" if cursor_ide_enabled() else " [experimental — set CROSSLAB_PROBE_CURSOR_IDE=1 to auto-apply]"
+        add_check(
+            "profile_probe:cursor-ide",
+            True,
+            f"{ide.model_display} ({ide.config_path}){flag_note}",
+        )
+    else:
+        ide_path = cursor_state_db_path()
+        detail = "Unreadable (locked or schema)" if ide_path.exists() else "No config found"
+        add_check(
+            "profile_probe:cursor-ide",
+            True,
+            detail,
+        )
+
     _, selected = detect_summary(harness_hint=harness_hint)
     if selected and selected.is_set():
         add_check(

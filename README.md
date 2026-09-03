@@ -202,6 +202,20 @@ $env:CROSSLAB_AGENT_MODEL_DISPLAY = "GPT Sol 5.6"
 
 Detected values reflect **configured defaults**, not necessarily the live session model.
 
+**Cursor IDE (experimental):** CrossLab can read the selected composer/agent model from Cursor's `state.vscdb` (read-only). Diagnostics always attempt this; auto-apply on node start is opt-in:
+
+```powershell
+$env:CROSSLAB_PROBE_CURSOR_IDE = "1"
+```
+
+| | |
+| :--- | :--- |
+| Inspect | `crosslab detect-profile` / `doctor --detect-profile` report `cursor-ide` even when the flag is unset |
+| Auto-apply | Only when `CROSSLAB_PROBE_CURSOR_IDE=1` **and** Cursor CLI config is absent |
+| Confidence | `0.7` (`~` prefix in the desktop peer list) |
+| Persistence | IDE results are **not** written to `agent_profile.json` |
+| Caveats | Reads saved `aiSettings.modelConfig` (composer, then agent), not an unsaved in-memory picker. Schema can change across Cursor versions. If Cursor has the DB locked, CrossLab copies it to a temp file. |
+
 ### Harness thread linking (CodeTalker / OpenCode)
 
 Link external harness session IDs to a CrossLab investigation via the desktop Setup Wizard or MCP `crosslab_set_harness_link`. This is especially useful when CodeTalker cannot discover an OpenCode thread by project name — see [docs/codetalker-opencode.md](docs/codetalker-opencode.md).
