@@ -288,6 +288,28 @@ class CrossLabMCPServer:
                 "inputSchema": {"type": "object", "properties": {}},
             },
             {
+                "name": "crosslab_detect_agent_profile",
+                "description": (
+                    "Probe local Codex/OpenCode/Cursor CLI configs for harness model identity. "
+                    "Returns candidates and selected profile; optional apply writes to node when profile is unset."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "harness": {
+                            "type": "string",
+                            "enum": ["codex", "opencode", "cursor"],
+                            "description": "Limit probe to one harness",
+                        },
+                        "apply": {
+                            "type": "boolean",
+                            "description": "Apply selected profile to node when current profile is unset",
+                            "default": False,
+                        },
+                    },
+                },
+            },
+            {
                 "name": "crosslab_request_human_repro",
                 "description": "Request structured human reproduction steps for a run.",
                 "inputSchema": {
@@ -499,6 +521,12 @@ class CrossLabMCPServer:
         elif name == "crosslab_get_peer_profiles":
             peers = await client.get_peer_profiles()
             return {"status": "ok", "peers": peers}
+
+        elif name == "crosslab_detect_agent_profile":
+            return await client.detect_agent_profile(
+                harness=arguments.get("harness"),
+                apply=arguments.get("apply", False),
+            )
 
         elif name == "crosslab_request_human_repro":
             return await client.request_human_repro(

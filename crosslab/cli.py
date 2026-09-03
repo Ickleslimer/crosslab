@@ -66,11 +66,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     from crosslab.mcp.doctor import run_doctor
 
     node_url = args.node_url or os.environ.get("CROSSLAB_NODE_URL", "http://127.0.0.1:8765")
+    harness_hint = getattr(args, "harness", None) or os.environ.get("CROSSLAB_HARNESS")
     results = asyncio.run(
         run_doctor(
             node_url=node_url,
             session_id=args.session,
             observability=getattr(args, "observability", False),
+            detect_profile=getattr(args, "detect_profile", False),
+            harness_hint=harness_hint or None,
         )
     )
 
@@ -86,6 +89,46 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     console.print(table)
     if not results["ok"]:
         sys.exit(1)
+
+
+def cmd_detect_profile(args: argparse.Namespace) -> None:
+    from crosslab.engine.harness_probes import detect_summary
+
+    harness_hint = args.harness or os.environ.get("CROSSLAB_HARNESS")
+    candidates, selected = detect_summary(harness_hint=harness_hint or None)
+
+    if args.json:
+        payload = {
+            "candidates": [c.to_dict() for c in candidates],
+            "selected": selected.model_dump() if selected else None,
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title="CrossLab Profile Detection", header_style="bold cyan")
+    table.add_column("Harness", style="cyan")
+    table.add_column("Model", style="white")
+    table.add_column("Config", style="white")
+
+    if not candidates:
+        console.print("[yellow]No Tier A harness config detected.[/yellow]")
+    else:
+        for candidate in candidates:
+            table.add_row(candidate.harness, candidate.model_display, str(candidate.config_path))
+        console.print(table)
+
+    if selected and selected.is_set():
+        console.print(
+            f"\n[green]Selected:[/green] {selected.harness} / {selected.model_display} "
+            f"(confidence {selected.confidence})"
+        )
+    elif len(candidates) > 1 and not harness_hint:
+        console.print(
+            "\n[yellow]Ambiguous — multiple configs found. "
+            "Set CROSSLAB_HARNESS or pass --harness to disambiguate.[/yellow]"
+        )
+    else:
+        console.print("\n[dim]No profile selected.[/dim]")
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -256,6 +299,32 @@ def main() -> None:
         action="store_true",
         help="Verify transcript endpoint, DB path, peer count, and last message age",
     )
+    doctor_parser.add_argument(
+        "--detect-profile",
+        action="store_true",
+        help="Probe local Codex/OpenCode/Cursor CLI configs for harness model identity",
+    )
+    doctor_parser.add_argument(
+        "--harness",
+        type=str,
+        default=None,
+        choices=["codex", "opencode", "cursor"],
+        help="Limit profile probe to one harness (also reads CROSSLAB_HARNESS)",
+    )
+
+    # detect-profile
+    detect_parser = subparsers.add_parser(
+        "detect-profile",
+        help="Probe local harness configs for model identity (no running node required)",
+    )
+    detect_parser.add_argument(
+        "--harness",
+        type=str,
+        default=None,
+        choices=["codex", "opencode", "cursor"],
+        help="Limit probe to one harness",
+    )
+    detect_parser.add_argument("--json", action="store_true", help="Output JSON")
 
     # node
     node_parser = subparsers.add_parser("node", help="Start an A2A agent node")
@@ -323,6 +392,8 @@ def main() -> None:
             cmd_mcp(args)
     elif args.command == "doctor":
         cmd_doctor(args)
+    elif args.command == "detect-profile":
+        cmd_detect_profile(args)
     elif args.command == "node":
         cmd_node(args)
     elif args.command == "relay":

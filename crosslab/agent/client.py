@@ -409,6 +409,40 @@ class CrossLabClient:
             })
         return result
 
+    async def detect_agent_profile(
+        self,
+        harness: Optional[str] = None,
+        apply: bool = False,
+    ) -> Dict[str, Any]:
+        import os
+
+        from crosslab.engine.harness_probes import detect_summary
+
+        harness_hint = harness or os.environ.get("CROSSLAB_HARNESS")
+        candidates, selected = detect_summary(harness_hint=harness_hint or None)
+        payload: Dict[str, Any] = {
+            "status": "ok",
+            "candidates": [c.to_dict() for c in candidates],
+            "selected": selected.model_dump() if selected else None,
+            "applied": False,
+        }
+
+        if apply and selected and selected.is_set():
+            current = await self.get_agent_profile()
+            has_current = bool(current.get("model_id") or current.get("model_display"))
+            if not has_current:
+                updated = await self.set_agent_profile(
+                    harness=selected.harness,
+                    model_id=selected.model_id,
+                    model_display=selected.model_display,
+                )
+                payload["applied"] = True
+                payload["profile"] = updated
+            else:
+                payload["note"] = "Current profile already set; not overwriting"
+
+        return payload
+
     async def set_harness_link(self, harness: str, thread_id: str) -> Dict[str, Any]:
         links = await self.get_harness_links()
         from crosslab.engine.manifest import HarnessLinks

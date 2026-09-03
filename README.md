@@ -187,6 +187,21 @@ $env:CROSSLAB_AGENT_MODEL_DISPLAY = "GPT Sol 5.6"
 
 `mcp install --harness codex` pre-fills `CROSSLAB_HARNESS` in the generated MCP env block.
 
+**Auto-detect (Tier A):** On node startup, CrossLab probes local config files when no manual/env profile is set:
+
+| Harness | Config file |
+|---------|-------------|
+| Codex | `~/.codex/config.toml` |
+| OpenCode CLI | `~/.config/opencode/opencode.json(c)` |
+| Cursor CLI | `~/.cursor/cli-config.json` |
+
+- Exactly one config found → profile auto-filled (`source: config_file`, `confidence: 0.9`)
+- Multiple configs found → ambiguous; set `CROSSLAB_HARNESS` or use `crosslab_set_agent_profile`
+- Inspect probes: `crosslab detect-profile` or `crosslab doctor --detect-profile`
+- MCP: `crosslab_detect_agent_profile(apply=true)` applies only when current profile is unset
+
+Detected values reflect **configured defaults**, not necessarily the live session model.
+
 ### Harness thread linking (CodeTalker / OpenCode)
 
 Link external harness session IDs to a CrossLab investigation via the desktop Setup Wizard or MCP `crosslab_set_harness_link`. This is especially useful when CodeTalker cannot discover an OpenCode thread by project name — see [docs/codetalker-opencode.md](docs/codetalker-opencode.md).
@@ -209,6 +224,7 @@ Link external harness session IDs to a CrossLab investigation via the desktop Se
 - `crosslab_get_agent_profile`: Get this node's harness and model identity.
 - `crosslab_set_agent_profile`: Set harness/model identity visible to peers.
 - `crosslab_get_peer_profiles`: List remote peers with their harness and model.
+- `crosslab_detect_agent_profile`: Probe local harness configs; optional `apply` when profile unset.
 
 ### Agent coordination (no poll timers)
 

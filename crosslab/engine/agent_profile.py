@@ -100,14 +100,29 @@ def merge_profile(base: AgentProfile, override: AgentProfile) -> AgentProfile:
     return merged
 
 
-def resolve_local_profile(stored: AgentProfile) -> AgentProfile:
-    """Apply precedence: manual stored > env > stored file > empty."""
+def resolve_local_profile(
+    stored: AgentProfile,
+    detected: Optional[AgentProfile] = None,
+) -> AgentProfile:
+    """Apply precedence: manual stored > env > probe > stored file > empty."""
     if stored.source == "manual" and stored.is_set():
         return stored
     env_profile = profile_from_env()
     if env_profile.is_set():
         return merge_profile(stored, env_profile)
+    if detected and detected.is_set():
+        return detected
     return stored if stored.is_set() else AgentProfile()
+
+
+def should_persist_detected_profile(stored: AgentProfile, resolved: AgentProfile) -> bool:
+    """Persist probe-filled profile when stored file is empty and result came from config."""
+    return (
+        resolved.source == "config_file"
+        and resolved.is_set()
+        and stored.source != "manual"
+        and not stored.is_set()
+    )
 
 
 def format_profile_label(profile: AgentProfile) -> str:

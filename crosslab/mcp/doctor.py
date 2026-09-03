@@ -12,11 +12,66 @@ from crosslab.transport.topology import is_loopback_url
 from crosslab.mcp.server import CrossLabMCPServer
 
 
+def _add_profile_probe_checks(
+    add_check,
+    harness_hint: Optional[str] = None,
+) -> None:
+    from crosslab.engine.harness_probes import detect_summary, probe_all
+    from crosslab.engine.harness_probes.registry import PROBE_ORDER
+
+    candidates = probe_all(harness_hint=harness_hint)
+    found = {c.harness: c for c in candidates}
+
+    for harness in PROBE_ORDER:
+        result = found.get(harness)
+        if result:
+            add_check(
+                f"profile_probe:{harness}",
+                True,
+                f"{result.model_display} ({result.config_path})",
+            )
+        else:
+            add_check(
+                f"profile_probe:{harness}",
+                True,
+                "No config found",
+            )
+
+    _, selected = detect_summary(harness_hint=harness_hint)
+    if selected and selected.is_set():
+        add_check(
+            "profile_detect",
+            True,
+            f"Would select {selected.harness} / {selected.model_display}",
+        )
+    elif len(candidates) > 1 and not harness_hint:
+        names = ", ".join(c.harness for c in candidates)
+        add_check(
+            "profile_detect",
+            True,
+            f"Ambiguous — multiple configs found ({names}); set CROSSLAB_HARNESS to disambiguate",
+        )
+    elif not candidates:
+        add_check(
+            "profile_detect",
+            True,
+            "No Tier A harness config detected",
+        )
+    else:
+        add_check(
+            "profile_detect",
+            True,
+            "No profile selected",
+        )
+
+
 async def run_doctor(
     node_url: str = "http://127.0.0.1:8765",
     session_id: str = "default",
     *,
     observability: bool = False,
+    detect_profile: bool = False,
+    harness_hint: Optional[str] = None,
 ) -> Dict[str, Any]:
     results: Dict[str, Any] = {
         "node_url": node_url,
@@ -165,5 +220,8 @@ async def run_doctor(
                     add_check("observability", False, f"HTTP {obs_res.status_code}")
         except Exception as e:
             add_check("observability", False, str(e))
+
+    if detect_profile:
+        _add_profile_probe_checks(add_check, harness_hint=harness_hint)
 
     return results

@@ -67,10 +67,32 @@ class InvestigationSession:
             save_harness_links(self.data_dir, links)
 
     def get_agent_profile(self):
-        from crosslab.engine.agent_profile import AgentProfile, load_agent_profile, resolve_local_profile
+        import os
+
+        from crosslab.engine.agent_profile import (
+            AgentProfile,
+            load_agent_profile,
+            resolve_local_profile,
+            save_agent_profile,
+            should_persist_detected_profile,
+        )
+        from crosslab.engine.harness_probes import detect_agent_profile
+
         if self.storage.db_path == ":memory:":
-            return resolve_local_profile(AgentProfile())
-        return resolve_local_profile(load_agent_profile(self.data_dir))
+            stored = AgentProfile()
+        else:
+            stored = load_agent_profile(self.data_dir)
+
+        detected = detect_agent_profile(harness_hint=os.environ.get("CROSSLAB_HARNESS"))
+        resolved = resolve_local_profile(stored, detected)
+
+        if (
+            self.storage.db_path != ":memory:"
+            and should_persist_detected_profile(stored, resolved)
+        ):
+            save_agent_profile(self.data_dir, resolved)
+
+        return resolved
 
     def save_agent_profile(self, profile) -> None:
         from crosslab.engine.agent_profile import save_agent_profile
