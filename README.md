@@ -159,6 +159,9 @@ uv run crosslab doctor --node-url http://127.0.0.1:8765
 
 # First-run observability checklist (transcript, DB, peers, message age)
 uv run crosslab doctor --observability --node-url http://127.0.0.1:8765
+
+# Compare local vs peer message ledgers before a coordinated run
+uv run crosslab probe-ledger --node-url http://127.0.0.1:8766 --peer http://192.168.1.10:8765
 ```
 
 Supported harnesses: `cursor`, `claude-desktop`, `antigravity`, `codex`, `opencode`.

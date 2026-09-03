@@ -169,6 +169,39 @@ def cmd_watch(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_probe_ledger(args: argparse.Namespace) -> None:
+    from crosslab.engine.ledger_probe import compare_ledgers, fix_ledger_from_peer
+
+    node_url = args.node_url or os.environ.get("CROSSLAB_NODE_URL", "http://127.0.0.1:8765")
+    diff = asyncio.run(compare_ledgers(node_url, args.peer, session_id=args.session))
+
+    table = Table(title="CrossLab Ledger Probe", header_style="bold cyan")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="white")
+    table.add_row("Local URL", diff.local_url)
+    table.add_row("Peer URL", diff.peer_url)
+    table.add_row("Local messages", str(diff.local_count))
+    table.add_row("Peer messages", str(diff.peer_count))
+    table.add_row("Common", str(diff.common_count))
+    table.add_row("Only local", str(len(diff.only_local)))
+    table.add_row("Only peer", str(len(diff.only_peer)))
+    if diff.error:
+        table.add_row("Note", diff.error)
+    console.print(table)
+
+    if diff.only_local:
+        console.print(f"[yellow]Only local (sample):[/yellow] {', '.join(diff.only_local[:10])}")
+    if diff.only_peer:
+        console.print(f"[yellow]Only peer (sample):[/yellow] {', '.join(diff.only_peer[:10])}")
+
+    if args.fix and not diff.ok:
+        ingested = asyncio.run(fix_ledger_from_peer(node_url, args.peer, session_id=args.session))
+        console.print(f"[green]Pulled {ingested} message(s) from peer[/green]")
+
+    if not diff.ok:
+        sys.exit(1)
+
+
 def cmd_transcript(args: argparse.Namespace) -> None:
     session = InvestigationSession(
         session_id=args.session,
@@ -269,6 +302,16 @@ def main() -> None:
     watch_parser.add_argument("--role", type=str, default="host", choices=["host", "client"], help="Local role hint for peer detection")
     watch_parser.add_argument("--verbose", action="store_true", help="Print full event details to stdout")
 
+    # probe-ledger
+    probe_parser = subparsers.add_parser(
+        "probe-ledger",
+        help="Compare local vs peer message ledgers for consistency",
+    )
+    probe_parser.add_argument("--node-url", type=str, default=None, help="Local node URL")
+    probe_parser.add_argument("--peer", type=str, required=True, help="Peer node URL to compare")
+    probe_parser.add_argument("--session", type=str, default="default")
+    probe_parser.add_argument("--fix", action="store_true", help="Pull missing messages from peer into local ledger")
+
     args = parser.parse_args()
 
     if args.command == "demo":
@@ -291,6 +334,8 @@ def main() -> None:
         cmd_transcript(args)
     elif args.command == "watch":
         cmd_watch(args)
+    elif args.command == "probe-ledger":
+        cmd_probe_ledger(args)
     else:
         parser.print_help()
 

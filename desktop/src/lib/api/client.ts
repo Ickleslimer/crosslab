@@ -49,6 +49,17 @@ export interface RunbookState {
   completed: RunbookItem[];
 }
 
+export interface FrictionHeatmap {
+  taxonomies: string[];
+  harnesses: string[];
+  matrix: number[][];
+  counts: Record<string, Record<string, number>>;
+  cells: Record<string, Record<string, Array<{ id: string; status: string; severity: string }>>>;
+  total_events: number;
+  status_totals: Record<string, number>;
+  csv_path?: string;
+}
+
 export interface AgentPeer {
   agent_id: string;
   role: string;
@@ -148,6 +159,7 @@ export function createApi(port: number) {
     hypotheses: () => fetchJson<Hypothesis[]>(`${base}/v1/a2a/hypotheses`),
     runs: () => fetchJson<RunRecord[]>(`${base}/v1/a2a/runs`),
     transcript: () => fetch(`${base}/v1/a2a/transcript`).then((r) => r.text()),
+    frictionHeatmap: () => fetchJson<FrictionHeatmap>(`${base}/v1/a2a/friction-heatmap`),
     sendChat: (senderId: string, text: string) =>
       fetchJson<unknown>(`${base}/v1/a2a/messages`, {
         method: 'POST',

@@ -20,6 +20,7 @@ import httpx
 
 from crosslab.engine.session import InvestigationSession
 from crosslab.engine.barrier import BarrierCoordinator, BarrierState
+from crosslab.engine.friction_heatmap import build_heatmap_matrix
 from crosslab.engine.manifest import HarnessLinks
 from crosslab.engine.observability import build_observability_report
 from crosslab.engine.probe_validation import validate_instrumentation_payload
@@ -222,6 +223,10 @@ class A2ANode:
         async def get_observability() -> Dict[str, Any]:
             return build_observability_report(self.session, self.agent_id)
 
+        @app.get("/v1/a2a/friction-heatmap")
+        async def get_friction_heatmap() -> Dict[str, Any]:
+            return build_heatmap_matrix()
+
         # --- A2A 1.0 Agent Card Discovery ---
 
         @app.get("/.well-known/agent-card.json", response_model=AgentCard)
@@ -343,14 +348,22 @@ class A2ANode:
         @app.post("/v1/a2a/messages")
         async def receive_message(envelope: MessageEnvelope) -> Dict[str, Any]:
             try:
-                ingested = await self._ingest_message(envelope)
+                ingested, ready_meta = await self._ingest_message(envelope)
             except InstrumentationRejected as exc:
                 raise HTTPException(
                     status_code=422,
                     detail={"status": "rejected", "reason": exc.reason},
                 ) from exc
             if not ingested:
-                return {"status": "already_processed", "message_id": envelope.message_id}
+                response: Dict[str, Any] = {
+                    "status": "already_processed",
+                    "message_id": envelope.message_id,
+                }
+                if ready_meta is None:
+                    ready_meta = self.barrier.ready_response_for_envelope(envelope)
+                if ready_meta:
+                    response.update(ready_meta)
+                return response
 
             # Relay to other remote peers across network if relay requested
             if envelope.relay and envelope.hops < 5:
@@ -359,7 +372,10 @@ class A2ANode:
                 relayed_envelope.sender_id = self.agent_id  # forwarder
                 asyncio.create_task(self._relay_to_peers(relayed_envelope))
 
-            return {"status": "received", "message_id": envelope.message_id}
+            response = {"status": "received", "message_id": envelope.message_id}
+            if ready_meta:
+                response.update(ready_meta)
+            return response
 
         @app.get("/v1/a2a/messages", response_model=List[MessageEnvelope])
         async def get_messages(
@@ -453,12 +469,15 @@ class A2ANode:
         async def sync_run(signal: SyncRunSignal) -> Dict[str, Any]:
             signal.session_id = self.session_id
             logger.info(f"[{self.agent_id}] Run {signal.run_id} sync signal: phase='{signal.phase}' from {signal.sender_id}")
-            self.barrier.on_sync_signal(signal)
+            ready_meta = self.barrier.on_sync_signal(signal)
             await self._broadcast_event({
                 "event": "sync_signal",
                 "signal": signal.model_dump(),
             })
-            return {"status": "ok", "signal": signal.model_dump()}
+            response: Dict[str, Any] = {"status": "ok", "signal": signal.model_dump()}
+            if ready_meta:
+                response.update(ready_meta)
+            return response
 
         @app.post("/v1/a2a/runs")
         async def record_run(run: RunRecord) -> Dict[str, Any]:
@@ -644,10 +663,10 @@ class A2ANode:
             return result["reason"]
         return None
 
-    async def _ingest_message(self, envelope: MessageEnvelope) -> bool:
+    async def _ingest_message(self, envelope: MessageEnvelope) -> tuple[bool, Optional[Dict[str, Any]]]:
         """Persist and publish one unseen message through every local delivery path."""
         if envelope.message_id in self._seen_message_ids:
-            return False
+            return False, self.barrier.ready_response_for_envelope(envelope)
 
         rejection = self._check_instrumentation_rejection(envelope)
         if rejection:
@@ -655,7 +674,7 @@ class A2ANode:
 
         self.session.record_message(envelope)
         self._seen_message_ids.add(envelope.message_id)
-        self.barrier.on_message(envelope)
+        ready_meta = self.barrier.on_message(envelope)
         logger.info(
             f"[{self.agent_id}] Ingested message {envelope.message_id} "
             f"from {envelope.sender_id}: {envelope.action.value}"
@@ -674,7 +693,7 @@ class A2ANode:
             "envelope": envelope.model_dump(),
         })
         self._message_waiters.notify(envelope)
-        return True
+        return True, ready_meta
 
     def on_action(self, action: ActionType, handler: Callable[[MessageEnvelope], Any]) -> None:
         if action not in self._action_handlers:

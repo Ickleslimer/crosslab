@@ -145,11 +145,11 @@ async def test_ingested_message_reaches_handlers_and_local_sse(host_node):
         action=ActionType.CHAT,
     )
 
-    assert await host_node._ingest_message(message) is True
+    assert (await host_node._ingest_message(message))[0] is True
     assert handled == ["msg_delivery"]
     assert (await subscriber.get())["envelope"]["message_id"] == "msg_delivery"
 
-    assert await host_node._ingest_message(message) is False
+    assert (await host_node._ingest_message(message))[0] is False
     assert handled == ["msg_delivery"]
     assert subscriber.empty()
 
@@ -180,7 +180,7 @@ async def test_restart_seeds_message_deduplication_from_storage(tmp_path):
     handled = []
     restarted_node.on_action(ActionType.CHAT, lambda envelope: handled.append(envelope.message_id))
 
-    assert await restarted_node._ingest_message(message) is False
+    assert (await restarted_node._ingest_message(message))[0] is False
     assert handled == []
 
 

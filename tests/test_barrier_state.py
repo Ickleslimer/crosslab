@@ -196,6 +196,76 @@ def test_sync_signal_ready(coordinator):
     assert state.ready["client"] is True
 
 
+def test_duplicate_ready_returns_metadata(coordinator, session):
+    env = MessageEnvelope(
+        message_id="dup_0",
+        session_id="test-session",
+        sender_id="agent-host",
+        action=ActionType.SYNC_READY,
+        natural_language="READY Run 14",
+        payload={"run_id": 14},
+    )
+    first = coordinator.on_message(env)
+    assert first is not None
+    assert first["duplicate_ready"] is False
+    assert first["barrier"]["ready"]["host"] is True
+
+    second = coordinator.on_message(
+        MessageEnvelope(
+            message_id="dup_1",
+            session_id="test-session",
+            sender_id="agent-host",
+            action=ActionType.SYNC_READY,
+            natural_language="READY Run 14",
+            payload={"run_id": 14},
+        )
+    )
+    assert second is not None
+    assert second["duplicate_ready"] is True
+    assert second["barrier"]["ready"]["host"] is True
+
+
+@pytest.mark.asyncio
+async def test_post_ready_includes_barrier(tmp_path):
+    node = A2ANode(
+        agent_id="test-host",
+        role=AgentRole.HOST,
+        db_path=str(tmp_path / "post_ready.db"),
+        session_id="test-session",
+    )
+    transport = ASGITransport(app=node.app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/v1/a2a/messages",
+            json={
+                "message_id": "ready_http",
+                "session_id": "test-session",
+                "sender_id": "agent-host",
+                "action": ActionType.SYNC_READY.value,
+                "natural_language": "READY Run 14",
+                "payload": {"run_id": 14},
+            },
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["duplicate_ready"] is False
+        assert data["barrier"]["run_id"] == 14
+        assert data["barrier"]["ready"]["host"] is True
+
+        dup = await client.post(
+            "/v1/a2a/messages",
+            json={
+                "message_id": "ready_http_dup",
+                "session_id": "test-session",
+                "sender_id": "agent-host",
+                "action": ActionType.SYNC_READY.value,
+                "natural_language": "READY Run 14",
+                "payload": {"run_id": 14},
+            },
+        )
+        assert dup.json()["duplicate_ready"] is True
+
+
 @pytest.mark.asyncio
 async def test_barrier_api_endpoint(tmp_path):
     node = A2ANode(

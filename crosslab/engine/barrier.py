@@ -61,10 +61,13 @@ class RunBarrierTracker:
     def touch(self) -> None:
         self.updated_at = utc_now_iso()
 
-    def mark_ready(self, role: str) -> None:
+    def mark_ready(self, role: str) -> bool:
+        """Mark role ready. Returns True if this was a duplicate (already ready)."""
+        duplicate = self.ready.get(role, False)
         if role in self.ready:
             self.ready[role] = True
         self.touch()
+        return duplicate
 
     def to_state(self, session_paused: bool, pause_reason: Optional[str]) -> BarrierState:
         ready_both = self.ready.get("host", False) and self.ready.get("client", False)
@@ -120,7 +123,42 @@ class BarrierCoordinator:
             self.on_message(msg, replay=True)
         # sync signals are not persisted historically — state rebuilt from messages only
 
-    def on_message(self, envelope: MessageEnvelope, replay: bool = False) -> None:
+    @staticmethod
+    def is_ready_envelope(envelope: MessageEnvelope) -> bool:
+        text = envelope.natural_language or ""
+        action = envelope.action
+        if action in (ActionType.SYNC_READY, ActionType.REPORT_INSTRUMENTATION_READY):
+            return True
+        if action == ActionType.CHAT and re.search(r"\bREADY\b", text, re.IGNORECASE):
+            return True
+        return False
+
+    def ready_response_for_envelope(self, envelope: MessageEnvelope) -> Optional[Dict[str, Any]]:
+        """Barrier snapshot for an already-processed READY message (no state mutation)."""
+        if not self.is_ready_envelope(envelope):
+            return None
+        text = envelope.natural_language or ""
+        payload = envelope.payload or {}
+        run_id = self._extract_run_id(text, payload)
+        if run_id is None:
+            return None
+        try:
+            state = self.get_barrier_state(run_id)
+        except KeyError:
+            return None
+        return {
+            "duplicate_ready": True,
+            "barrier": state.model_dump(),
+        }
+
+    def _ready_response(self, tracker: RunBarrierTracker, duplicate: bool) -> Dict[str, Any]:
+        state = tracker.to_state(self._session_paused, self._pause_reason)
+        return {
+            "duplicate_ready": duplicate,
+            "barrier": state.model_dump(),
+        }
+
+    def on_message(self, envelope: MessageEnvelope, replay: bool = False) -> Optional[Dict[str, Any]]:
         text = envelope.natural_language or ""
         payload = envelope.payload or {}
         action = envelope.action
@@ -136,9 +174,10 @@ class BarrierCoordinator:
 
         run_id = self._extract_run_id(text, payload)
         if run_id is None:
-            return
+            return None
 
         tracker = self._get_tracker(run_id)
+        ready_result: Optional[Dict[str, Any]] = None
 
         if action == ActionType.PROPOSE_EXPERIMENT:
             if tracker.phase == BarrierPhase.IDLE:
@@ -167,9 +206,11 @@ class BarrierCoordinator:
                 }
                 tracker.instrumentation[role] = inst
                 if validation["ok"] or not self.strict_instrumentation:
-                    tracker.mark_ready(role)
+                    duplicate = tracker.mark_ready(role)
+                    ready_result = self._ready_response(tracker, duplicate)
             elif role:
-                tracker.mark_ready(role)
+                duplicate = tracker.mark_ready(role)
+                ready_result = self._ready_response(tracker, duplicate)
 
         elif action == ActionType.START_RUN or re.search(r"START\s+RUN", text, re.IGNORECASE):
             tracker.phase = BarrierPhase.RUNNING
@@ -182,11 +223,13 @@ class BarrierCoordinator:
 
         elif action == ActionType.CHAT:
             if re.search(r"\bREADY\b", text, re.IGNORECASE) and role:
-                tracker.mark_ready(role)
+                duplicate = tracker.mark_ready(role)
+                ready_result = self._ready_response(tracker, duplicate)
 
         tracker.touch()
+        return ready_result
 
-    def on_sync_signal(self, signal: SyncRunSignal) -> None:
+    def on_sync_signal(self, signal: SyncRunSignal) -> Optional[Dict[str, Any]]:
         tracker = self._get_tracker(signal.run_id)
         signal_data = signal.model_dump()
         tracker.last_signals.append(signal_data)
@@ -198,7 +241,9 @@ class BarrierCoordinator:
         if phase in ("prepare", "preparing", "propose"):
             tracker.phase = BarrierPhase.PREPARING
         elif phase == "ready" and role:
-            tracker.mark_ready(role)
+            duplicate = tracker.mark_ready(role)
+            tracker.touch()
+            return self._ready_response(tracker, duplicate)
         elif phase == "start":
             tracker.phase = BarrierPhase.RUNNING
         elif phase in ("stop", "end", "complete", "completed"):
@@ -207,6 +252,7 @@ class BarrierCoordinator:
             tracker.phase = BarrierPhase.ABORTED
 
         tracker.touch()
+        return None
 
     def get_barrier_state(self, run_id: int) -> BarrierState:
         run = self.session.get_run(run_id)

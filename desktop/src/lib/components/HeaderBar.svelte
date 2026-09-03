@@ -49,6 +49,10 @@
   async function openBrowser() {
     await openLegacyInBrowser(port);
   }
+
+  function openFrictionHeatmap() {
+    window.location.href = '/admin/friction';
+  }
 </script>
 
 <header class="flex flex-wrap justify-between items-center pb-4 mb-6 border-b border-gray-800">
@@ -74,6 +78,9 @@
     </button>
     <button class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs border border-gray-700" onclick={openBrowser} disabled={!health}>
       Open in Browser
+    </button>
+    <button class="px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-xs border border-gray-700" onclick={openFrictionHeatmap} disabled={!health}>
+      Friction heatmap
     </button>
     <button class="px-3 py-1 rounded bg-rose-900/70 hover:bg-rose-800 text-xs border border-rose-700" onclick={onStop}>
       Stop Session
