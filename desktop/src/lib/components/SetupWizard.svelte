@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { createApi } from '$lib/api/client';
+  import { createApi, type AgentRole, type SessionConfig } from '$lib/api/client';
   import { getLocalAddresses, getNodePort, listSavedSessions, startNode, type NetworkEndpoint, type SavedSession } from '$lib/tauri';
   import { formatRelativeTime, generateJoinCode, loadSessionManifest, rememberSession, type SessionManifestEntry } from '$lib/sessions';
   import { nodeHealth, nodePort, sessionConfig } from '$lib/stores/session';
@@ -22,6 +22,10 @@
   let harnessCodex = $state('');
   let harnessOpencode = $state('');
   let harnessCursor = $state('');
+
+  let showAgentProfile = $state(false);
+  let profileHarness = $state('');
+  let profileModel = $state('');
 
   const recommended = $derived(endpoints.find((endpoint) => endpoint.recommended));
   const advancedEndpoints = $derived(endpoints.filter((endpoint) => !endpoint.recommended));
@@ -105,8 +109,16 @@
       nodePort.set(port);
       sessionConfig.set(config);
       await rememberSession(config);
+      const api = createApi(port);
+      if (profileHarness.trim() || profileModel.trim()) {
+        const model = profileModel.trim() || undefined;
+        await api.putProfile({
+          harness: profileHarness.trim() || undefined,
+          model_display: model,
+          model_id: model,
+        });
+      }
       if (harnessAntigravity || harnessCodex || harnessOpencode || harnessCursor) {
-        const api = createApi(port);
         await api.putManifest({
           antigravity: harnessAntigravity || undefined,
           codex: harnessCodex || undefined,
@@ -285,6 +297,41 @@
         {/if}
       </section>
     {/if}
+
+    <section class="border border-gray-800 rounded-lg overflow-hidden">
+      <button
+        type="button"
+        class="w-full flex justify-between items-center px-3 py-2 text-xs text-gray-400 bg-gray-900 hover:bg-gray-800"
+        onclick={() => (showAgentProfile = !showAgentProfile)}
+      >
+        <span>Agent profile (optional)</span>
+        <span>{showAgentProfile ? 'Hide' : 'Show'}</span>
+      </button>
+      {#if showAgentProfile}
+        <div class="p-3 bg-gray-950/60 grid grid-cols-1 gap-2 text-xs">
+          <p class="text-gray-500">Shown to peer agents after handshake. Leave blank to rely on env/auto-detect.</p>
+          <label>
+            Harness
+            <select bind:value={profileHarness} class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-1">
+              <option value="">(unset)</option>
+              <option value="antigravity">antigravity</option>
+              <option value="codex">codex</option>
+              <option value="opencode">opencode</option>
+              <option value="cursor">cursor</option>
+              <option value="claude-desktop">claude-desktop</option>
+            </select>
+          </label>
+          <label>
+            Model
+            <input
+              bind:value={profileModel}
+              class="mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 font-mono"
+              placeholder="e.g. GPT Sol 5.6"
+            />
+          </label>
+        </div>
+      {/if}
+    </section>
 
     <section class="border border-gray-800 rounded-lg overflow-hidden">
       <button

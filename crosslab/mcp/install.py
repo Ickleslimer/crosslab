@@ -15,7 +15,10 @@ SUPPORTED_HARNESSES = ("cursor", "claude-desktop", "antigravity", "codex", "open
 POST_INSTALL_HINTS: Dict[str, str] = {
     "cursor": "Paste into Cursor Settings → MCP, or merge into ~/.cursor/mcp.json. Restart Cursor.",
     "claude-desktop": "Merge into %APPDATA%\\Claude\\claude_desktop_config.json. Restart Claude Desktop.",
-    "antigravity": "Add to Antigravity MCP server settings. Restart the agent session.",
+    "antigravity": (
+        "Merged into ~/.gemini/config/mcp_config.json. Restart Antigravity / AGY. "
+        "If you previously used ~/.antigravity/mcp.json, remove that stale file."
+    ),
     "codex": "Add to Codex MCP configuration (Settings → MCP). Restart Codex.",
     "opencode": "Add to OpenCode MCP config. Restart OpenCode desktop.",
 }
@@ -51,10 +54,6 @@ def render_config(
         raise ValueError(f"Unsupported harness '{harness}'. Choose from: {', '.join(SUPPORTED_HARNESSES)}")
 
     entry = _crosslab_server_entry(node_url, project_root, harness=harness)
-
-    if harness == "antigravity":
-        return {"crosslab": entry}
-
     return {"mcpServers": {"crosslab": entry}}
 
 
@@ -67,7 +66,7 @@ def get_install_path(harness: str) -> Path:
         appdata = os.environ.get("APPDATA", str(home / "AppData" / "Roaming"))
         return Path(appdata) / "Claude" / "claude_desktop_config.json"
     if harness == "antigravity":
-        return home / ".antigravity" / "mcp.json"
+        return home / ".gemini" / "config" / "mcp_config.json"
     if harness == "codex":
         return home / ".codex" / "mcp.json"
     if harness == "opencode":
@@ -79,9 +78,6 @@ def get_install_path(harness: str) -> Path:
 def merge_config(existing: Dict[str, Any], rendered: Dict[str, Any], harness: str) -> Dict[str, Any]:
     harness = harness.lower()
     merged = dict(existing) if existing else {}
-    if harness == "antigravity":
-        merged.update(rendered)
-        return merged
     servers = dict(merged.get("mcpServers", {}))
     servers.update(rendered.get("mcpServers", {}))
     merged["mcpServers"] = servers

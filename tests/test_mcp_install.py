@@ -16,11 +16,25 @@ from crosslab.transport.node import A2ANode
 def test_render_config_all_harnesses(harness):
     config = render_config(harness, node_url="http://127.0.0.1:8765")
     assert config
-    if harness == "antigravity":
-        assert "crosslab" in config
-    else:
-        assert "mcpServers" in config
-        assert "crosslab" in config["mcpServers"]
+    assert "mcpServers" in config
+    assert "crosslab" in config["mcpServers"]
+    assert config["mcpServers"]["crosslab"]["env"]["CROSSLAB_HARNESS"] == harness
+
+
+def test_antigravity_install_path():
+    from crosslab.mcp.install import get_install_path
+
+    path = get_install_path("antigravity")
+    assert path.as_posix().endswith(".gemini/config/mcp_config.json")
+
+
+def test_merge_config_antigravity_preserves_sibling():
+    existing = {"mcpServers": {"other": {"command": "echo"}}}
+    rendered = render_config("antigravity")
+    merged = merge_config(existing, rendered, "antigravity")
+    assert "other" in merged["mcpServers"]
+    assert "crosslab" in merged["mcpServers"]
+    assert merged["mcpServers"]["crosslab"]["env"]["CROSSLAB_HARNESS"] == "antigravity"
 
 
 def test_render_config_with_project_root():

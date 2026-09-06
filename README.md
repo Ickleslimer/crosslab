@@ -154,6 +154,10 @@ uv run crosslab mcp install --harness cursor --node-url http://127.0.0.1:8765
 # Write merged config for Claude Desktop
 uv run crosslab mcp install --harness claude-desktop --write
 
+# Write Antigravity / Gemini MCP config (official path)
+uv run crosslab mcp install --harness antigravity --write
+# → ~/.gemini/config/mcp_config.json under mcpServers.crosslab
+
 # Validate node + MCP tool registration
 uv run crosslab doctor --node-url http://127.0.0.1:8765
 
@@ -166,9 +170,11 @@ uv run crosslab probe-ledger --node-url http://127.0.0.1:8766 --peer http://192.
 
 Supported harnesses: `cursor`, `claude-desktop`, `antigravity`, `codex`, `opencode`.
 
+Antigravity installs to `~/.gemini/config/mcp_config.json` (not the legacy `~/.antigravity/mcp.json`). Remove any stale legacy file after migrating.
+
 ### Agent profile (harness + model visibility)
 
-Peers can see each other's harness and model after handshake. Set identity via environment variables, REST, or MCP:
+Peers can see each other's harness and model after handshake. Set identity via environment variables, REST, MCP, or the desktop Setup Wizard **Agent profile (optional)** section:
 
 ```powershell
 # Environment (applied on node startup)
@@ -185,7 +191,9 @@ $env:CROSSLAB_AGENT_MODEL_DISPLAY = "GPT Sol 5.6"
 # crosslab_get_peer_profiles()
 ```
 
-`mcp install --harness codex` pre-fills `CROSSLAB_HARNESS` in the generated MCP env block.
+`mcp install --harness codex` (and other harnesses) pre-fills `CROSSLAB_HARNESS` in the generated MCP env block.
+
+For harnesses without a stable current-model file (Antigravity, Claude Desktop, OpenCode Desktop), use env/MCP/wizard self-report. Vendor contract for future auto-detect: [docs/harness-model-metadata.md](docs/harness-model-metadata.md).
 
 **Auto-detect (Tier A):** On node startup, CrossLab probes local config files when no manual/env profile is set:
 
