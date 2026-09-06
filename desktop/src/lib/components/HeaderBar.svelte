@@ -57,8 +57,9 @@
 
 <header class="flex flex-wrap justify-between items-center pb-4 mb-6 border-b border-gray-800">
   <div class="flex items-center space-x-3">
+    <img src="/crosslab-logo.png" alt="CrossLab" class="w-9 h-9 rounded-lg shadow-sm" width="36" height="36" />
     <div
-      class="w-4 h-4 rounded-full {dotClass()}"
+      class="w-3 h-3 rounded-full {dotClass()}"
       title={dotTitle()}
       aria-label={dotTitle()}
     ></div>

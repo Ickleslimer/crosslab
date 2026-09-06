@@ -136,10 +136,15 @@
 </script>
 
 <main class="min-h-screen p-6 max-w-3xl mx-auto">
-  <h1 class="text-3xl font-bold text-white mb-2">CrossLab Desktop</h1>
-  <p class="text-gray-400 mb-8 text-sm">
-    Investigations persist locally. Rejoin with the same join code to pick up the transcript and history.
-  </p>
+  <div class="flex items-center gap-4 mb-8">
+    <img src="/crosslab-logo.png" alt="CrossLab" class="w-14 h-14 rounded-xl shadow-md" width="56" height="56" />
+    <div>
+      <h1 class="text-3xl font-bold text-white">CrossLab Desktop</h1>
+      <p class="text-gray-400 text-sm mt-1">
+        Investigations persist locally. Rejoin with the same join code to pick up the transcript and history.
+      </p>
+    </div>
+  </div>
 
   <div class="glass-panel rounded-xl p-6 space-y-6">
     {#if recentSessions.length > 0}

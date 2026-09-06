@@ -1,5 +1,9 @@
 # CrossLab: Multi-Machine Agent-to-Agent (A2A) Empirical Collaboration Layer
 
+<p align="center">
+  <img src="docs/assets/crosslab-logo.png" alt="CrossLab logo" width="160" height="160" />
+</p>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![A2A 1.0 Ready](https://img.shields.io/badge/A2A-1.0%20Ready-blueviolet.svg)](https://a2a-protocol.org)
