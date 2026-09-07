@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::image::Image;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -38,6 +39,13 @@ pub struct HealthResponse {
 fn repo_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir.parent().unwrap().parent().unwrap().to_path_buf()
+}
+
+/// Native window chrome icon (title bar). Bundle/EXE icons alone are not
+/// always applied to ICON_SMALL on Windows after an icon swap.
+fn app_window_icon() -> Image<'static> {
+    Image::from_bytes(include_bytes!("../icons/128x128.png"))
+        .expect("failed to decode CrossLab window icon")
 }
 
 fn data_dir(app: &AppHandle) -> PathBuf {
@@ -448,6 +456,8 @@ async fn open_legacy_dashboard(app: AppHandle, port: u16) -> Result<(), String> 
     WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url.parse().unwrap()))
         .title("CrossLab Classic HUD")
         .inner_size(1280.0, 800.0)
+        .icon(app_window_icon())
+        .map_err(|e| e.to_string())?
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -476,6 +486,13 @@ pub fn run() {
             open_legacy_dashboard,
             open_legacy_in_browser
         ])
+        .setup(|app| {
+            let icon = app_window_icon();
+            for window in app.webview_windows().values() {
+                let _ = window.set_icon(icon.clone());
+            }
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
