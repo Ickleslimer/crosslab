@@ -8,13 +8,27 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::image::Image;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-#[derive(Default)]
 pub struct NodeState {
     child: Mutex<Option<CommandChild>>,
     port: Mutex<Option<u16>>,
+    /// When true, Exit also tears down CrossLab node processes.
+    stop_nodes_on_exit: AtomicBool,
+    close_prompt_open: AtomicBool,
+}
+
+impl Default for NodeState {
+    fn default() -> Self {
+        Self {
+            child: Mutex::new(None),
+            port: Mutex::new(None),
+            stop_nodes_on_exit: AtomicBool::new(true),
+            close_prompt_open: AtomicBool::new(false),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +52,12 @@ pub struct HealthResponse {
 
 fn repo_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.parent().unwrap().parent().unwrap().to_path_buf()
+    manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 /// Native window chrome icon (title bar). Bundle/EXE icons alone are not
@@ -102,7 +121,9 @@ fn wait_for_health(port: u16, alive: &AtomicBool) -> Result<HealthResponse, Stri
         }
         if let Ok(resp) = client.get(&url).send() {
             if resp.status().is_success() {
-                return resp.json().map_err(|e| format!("Invalid health response: {}", e));
+                return resp
+                    .json()
+                    .map_err(|e| format!("Invalid health response: {}", e));
             }
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -118,6 +139,30 @@ fn kill_node_process(state: &NodeState) {
         let _ = child.kill();
     }
     *state.port.lock().unwrap() = None;
+}
+
+/// Force-stop every CrossLab node binary on this machine (orphans included).
+fn kill_all_crosslab_node_processes() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "crosslab-node.exe", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", "crosslab-node"])
+            .output();
+    }
+}
+
+fn stop_all_nodes(state: &NodeState) {
+    kill_node_process(state);
+    kill_all_crosslab_node_processes();
 }
 
 #[tauri::command]
@@ -310,9 +355,11 @@ fn get_local_addresses() -> Vec<NetworkEndpoint> {
     endpoints.sort_by(|a, b| {
         a.kind
             .cmp(&b.kind)
-            .then_with(|| lan_priority(a.ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)).cmp(
-                &lan_priority(b.ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)),
-            ))
+            .then_with(|| {
+                lan_priority(a.ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)).cmp(
+                    &lan_priority(b.ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)),
+                )
+            })
             .then(a.ip.cmp(&b.ip))
     });
     endpoints.dedup_by(|a, b| a.ip == b.ip);
@@ -321,7 +368,12 @@ fn get_local_addresses() -> Vec<NetworkEndpoint> {
         .iter()
         .filter(|endpoint| endpoint.kind == "lan")
         .min_by_key(|endpoint| {
-            lan_priority(endpoint.ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED))
+            lan_priority(
+                endpoint
+                    .ip
+                    .parse()
+                    .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+            )
         })
         .map(|endpoint| endpoint.ip.clone())
     {
@@ -440,8 +492,7 @@ fn list_saved_sessions(app: AppHandle) -> Vec<SavedSession> {
 #[tauri::command]
 async fn open_data_folder(app: AppHandle) -> Result<(), String> {
     let dir = data_dir(&app);
-    tauri_plugin_opener::open_path(&dir, None::<&str>)
-        .map_err(|e| e.to_string())
+    tauri_plugin_opener::open_path(&dir, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -472,6 +523,7 @@ async fn open_legacy_in_browser(port: u16) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -493,12 +545,74 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            api.prevent_close();
+
+            let Some(state) = window.try_state::<NodeState>() else {
+                let _ = window.destroy();
+                return;
+            };
+            if state
+                .close_prompt_open
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return;
+            }
+
+            let app = window.app_handle().clone();
+            let window = window.clone();
+            std::thread::spawn(move || {
+                let answer = app
+                    .dialog()
+                    .message("Do you also want to stop all CrossLab node processes?")
+                    .title("Close CrossLab")
+                    .kind(MessageDialogKind::Info)
+                    .buttons(MessageDialogButtons::YesNoCancelCustom(
+                        "Stop nodes & quit".into(),
+                        "Quit only".into(),
+                        "Cancel".into(),
+                    ))
+                    .blocking_show_with_result();
+
+                if let Some(state) = app.try_state::<NodeState>() {
+                    state.close_prompt_open.store(false, Ordering::SeqCst);
+                    let stop_and_quit = match &answer {
+                        MessageDialogResult::Yes => true,
+                        MessageDialogResult::Custom(label) if label == "Stop nodes & quit" => true,
+                        _ => false,
+                    };
+                    let quit_only = match &answer {
+                        MessageDialogResult::No => true,
+                        MessageDialogResult::Custom(label) if label == "Quit only" => true,
+                        _ => false,
+                    };
+
+                    if stop_and_quit {
+                        state.stop_nodes_on_exit.store(true, Ordering::SeqCst);
+                        stop_all_nodes(&state);
+                        let _ = window.destroy();
+                    } else if quit_only {
+                        state.stop_nodes_on_exit.store(false, Ordering::SeqCst);
+                        let _ = window.destroy();
+                    }
+                }
+            });
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<NodeState>() {
-                    kill_node_process(&state);
+                    if state.stop_nodes_on_exit.load(Ordering::SeqCst) {
+                        stop_all_nodes(&state);
+                    }
                 }
             }
         });

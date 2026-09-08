@@ -20,7 +20,6 @@ import httpx
 
 from crosslab.engine.session import InvestigationSession
 from crosslab.engine.barrier import BarrierCoordinator, BarrierState
-from crosslab.engine.friction_heatmap import build_heatmap_matrix
 from crosslab.engine.manifest import HarnessLinks
 from crosslab.engine.agent_profile import AgentProfile, peer_profile_from_metadata
 from crosslab.engine.observability import build_observability_report
@@ -229,10 +228,6 @@ class A2ANode:
         @app.get("/v1/a2a/observability")
         async def get_observability() -> Dict[str, Any]:
             return build_observability_report(self.session, self.agent_id)
-
-        @app.get("/v1/a2a/friction-heatmap")
-        async def get_friction_heatmap() -> Dict[str, Any]:
-            return build_heatmap_matrix()
 
         # --- A2A 1.0 Agent Card Discovery ---
 

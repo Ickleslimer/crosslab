@@ -86,6 +86,14 @@ class RunbookCoordinator:
 
         pending = [i for i in items if i.status == "pending"]
         completed = [i for i in items if i.status == "completed"]
+
+        # One active card per run: a newer unreacked repro supersedes older ones.
+        # Items without run_id share a single bucket (common for chat UNPAUSE fallbacks).
+        latest_pending: Dict[Optional[int], RunbookItem] = {}
+        for item in pending:  # messages are chronological ASC
+            latest_pending[item.run_id] = item
+        pending = sorted(latest_pending.values(), key=lambda i: i.created_at or "")
+
         return RunbookState(pending=pending, completed=completed)
 
     @staticmethod

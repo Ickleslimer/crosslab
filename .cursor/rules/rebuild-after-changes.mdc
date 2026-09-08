@@ -1,0 +1,55 @@
+---
+description: Rebuild and silently reinstall the local CrossLab desktop app after every change
+alwaysApply: true
+---
+
+# Rebuild And Reinstall After Changes
+
+The user runs CrossLab from a **local installed/desktop build**. After finishing app-affecting code changes, rebuild **and** silently reinstall before ending the turn so their local app matches the repo.
+
+## When
+
+Do this after changes that affect the running desktop experience:
+
+- Desktop UI (`desktop/src/**`)
+- Tauri / Rust (`desktop/src-tauri/**`)
+- Python node / sidecar / engine / transport (`crosslab/**`)
+- Icons, static assets, or packaging config
+
+Skip only for docs-only or rule/config-only edits that cannot affect the running app.
+
+## How
+
+From `desktop/`, in PowerShell:
+
+```powershell
+# 1) Unlock binaries
+Get-Process | Where-Object { $_.ProcessName -match '^(crosslab-desktop|crosslab-node)$' } |
+  Stop-Process -Force -ErrorAction SilentlyContinue
+
+# 2) Rebuild sidecar when Python node code changed (or sidecar is missing)
+npm run build:sidecar
+
+# 3) Package the desktop app
+npm run tauri:build
+
+# 4) Silent reinstall (do not auto-launch — omit /R)
+$setup = Get-ChildItem "src-tauri\target\release\bundle\nsis\*-setup.exe" |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+if (-not $setup) { throw "NSIS setup.exe not found after tauri:build" }
+Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+```
+
+Notes:
+
+- NSIS silent flag is uppercase `/S`. Do **not** pass `/R` — that relaunches CrossLab after install and interrupts the user.
+- If only frontend/Tauri changed and the sidecar is already current, step 2 may be skipped.
+- If a process lock causes `Access is denied` during packaging, stop CrossLab processes and retry the build/install.
+- After reinstall, tell the user the app was updated; they can relaunch when ready.
+
+## After
+
+- Confirm rebuild + silent reinstall finished
+- Mention the setup path used
+- Do not leave unfinished app-affecting work without rebuild+reinstall unless it failed — then report the failure

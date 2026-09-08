@@ -32,6 +32,40 @@ def test_runbook_pending_repro(tmp_path):
     assert state.pending[0].steps[0].instruction == "Create lobby"
 
 
+def test_runbook_keeps_latest_pending_per_run(tmp_path):
+    session = InvestigationSession(session_id="test", db_path=str(tmp_path / "rb_latest.db"))
+    session.record_message(
+        MessageEnvelope(
+            message_id="chat-old",
+            session_id="test",
+            sender_id="agent-host",
+            action=ActionType.CHAT,
+            natural_language=(
+                "UNPAUSE reproduction steps\n"
+                "(1) Old stale checklist item\n"
+                "(2) Another old item"
+            ),
+        )
+    )
+    session.record_message(
+        MessageEnvelope(
+            message_id="chat-new",
+            session_id="test",
+            sender_id="agent-host",
+            action=ActionType.CHAT,
+            natural_language=(
+                "UNPAUSE reproduction steps\n"
+                "(1) Both humans at Main Menu\n"
+                "(2) Human A creates lobby"
+            ),
+        )
+    )
+    state = RunbookCoordinator(session).get_runbook()
+    assert len(state.pending) == 1
+    assert state.pending[0].message_id == "chat-new"
+    assert "Main Menu" in state.pending[0].steps[0].instruction
+
+
 def test_runbook_ack_completed(tmp_path):
     session = InvestigationSession(session_id="test", db_path=str(tmp_path / "rb2.db"))
     session.record_message(
