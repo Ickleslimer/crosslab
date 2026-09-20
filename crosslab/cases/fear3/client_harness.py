@@ -58,7 +58,7 @@ class Fear3ClientHarness:
                     {"packet_id": pkt_id, "transport_result": "success"},
                 )
 
-        self._log_event(f"Client transmission ongoing. Packets 8832-8835 dispatched during host silence window.")
+        self._log_event("Client transmission ongoing. Packets 8832-8835 dispatched during host silence window.")
 
         # Client receives connection tear-down packet from Host
         self.displayed_reason = "kicked_by_host"

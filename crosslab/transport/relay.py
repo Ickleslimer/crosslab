@@ -5,16 +5,15 @@ without requiring third-party VPNs or port forwarding.
 """
 
 import asyncio
-from datetime import datetime, timezone
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, List, Optional
-from fastapi import FastAPI, HTTPException, Request
+from typing import Any, AsyncGenerator, Dict, List
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
 
-from crosslab.protocol.models import AgentPeer, MessageEnvelope, utc_now_iso
+from crosslab.protocol.models import AgentPeer, MessageEnvelope
 
 logger = logging.getLogger("crosslab.relay")
 

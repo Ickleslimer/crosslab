@@ -4,7 +4,6 @@ Persistent SQLite storage backend for CrossLab shared investigation state.
 
 import json
 import os
-from pathlib import Path
 import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
@@ -12,15 +11,12 @@ from typing import Any, Dict, List, Optional
 from crosslab.engine.transcript import TranscriptRecorder
 from crosslab.protocol.actions import (
     AgentRole,
-    EvidenceRelation,
-    EvidenceType,
     ExperimentStatus,
     HypothesisStatus,
     RunOutcome,
 )
 from crosslab.protocol.models import (
     AgentAssessment,
-    AgentCard,
     AgentPeer,
     ArtifactPayload,
     EvidenceItem,

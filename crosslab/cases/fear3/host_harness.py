@@ -71,7 +71,7 @@ class Fear3HostHarness:
         self.disconnect_reason = "connection_lost"
         self.disconnect_time = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
         self._log_event(
-            f"Host Watchdog Timer expired (5000 ms silence). Terminating session with 'connection_lost'.",
+            "Host Watchdog Timer expired (5000 ms silence). Terminating session with 'connection_lost'.",
             {"internal_code": "0x80041002", "disconnect_time": self.disconnect_time},
         )
 

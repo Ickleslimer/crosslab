@@ -12,7 +12,7 @@ from crosslab.engine.storage import Storage
 from crosslab.engine.transcript import TranscriptRecorder, format_sender_badge, format_action_tag
 from crosslab.mcp.server import CrossLabMCPServer
 from crosslab.protocol.actions import ActionType, AgentRole, RunOutcome
-from crosslab.protocol.models import MessageEnvelope, RunRecord, utc_now_iso
+from crosslab.protocol.models import MessageEnvelope, RunRecord
 from crosslab.transport.node import A2ANode
 
 

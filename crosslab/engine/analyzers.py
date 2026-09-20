@@ -4,8 +4,7 @@ Separates generic temporal, sequence, and causal correlation from domain-specifi
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
-from crosslab.protocol.actions import RunOutcome
+from typing import List
 from crosslab.protocol.models import Discrepancy, RunRecord
 
 

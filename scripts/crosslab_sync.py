@@ -61,6 +61,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NoReturn
 
 REPO = Path(__file__).resolve().parent.parent
 DIST = "crosslab"
@@ -96,7 +97,7 @@ SKIP = {"claude-desktop": "no config present on this machine"}
 ENTRY_NAME = "crosslab"
 
 
-def die(msg: str) -> None:
+def die(msg: str) -> NoReturn:
     print(f"[crosslab-sync] FATAL: {msg}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -319,17 +320,19 @@ def sync_codex_toml(name: str, spec: dict, dry: bool) -> None:
 # ─── 4. launch probe ─────────────────────────────────────────────────────────
 
 
-def _probe_fail(proc: subprocess.Popen, msg: str) -> None:
+def _probe_fail(proc: subprocess.Popen, msg: str) -> NoReturn:
     """Kill the probe child, salvage its stderr, and abort the gate."""
     try:
         proc.kill()
         proc.wait(timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         pass
-    try:
-        err = (proc.stderr.read() or "").strip()
-    except (OSError, ValueError):
-        err = ""
+    err = ""
+    if proc.stderr is not None:
+        try:
+            err = (proc.stderr.read() or "").strip()
+        except (OSError, ValueError):
+            err = ""
     die(msg + (f" | stderr tail: {err[-500:]}" if err else ""))
 
 
@@ -358,16 +361,22 @@ def probe_registry_entry() -> None:
     )
 
     def send(obj: dict) -> None:
+        stdin = proc.stdin
+        if stdin is None:
+            _probe_fail(proc, "probe: server has no stdin pipe")
         try:
-            proc.stdin.write(json.dumps(obj) + "\n")
-            proc.stdin.flush()
+            stdin.write(json.dumps(obj) + "\n")
+            stdin.flush()
         except (OSError, ValueError):
             _probe_fail(proc, "probe: server closed stdin before the handshake")
 
     def await_id(want: int, deadline_s: float = 90.0) -> dict:
+        stdout = proc.stdout
+        if stdout is None:
+            _probe_fail(proc, "probe: server has no stdout pipe")
         end = time.time() + deadline_s
         while time.time() < end:
-            line = proc.stdout.readline()
+            line = stdout.readline()
             if not line:
                 _probe_fail(proc, f"probe: server exited before replying to id={want}")
             try:

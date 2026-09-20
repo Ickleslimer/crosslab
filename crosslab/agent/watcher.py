@@ -9,7 +9,7 @@ import asyncio
 import json
 import sys
 import time
-from typing import Optional, Set
+from typing import Optional
 
 import httpx
 
@@ -17,7 +17,6 @@ from crosslab.agent.wakeup import (
     StdoutBackend,
     WakeupBackend,
     WakeupEvent,
-    create_wakeup_backend,
 )
 
 

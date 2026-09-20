@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from crosslab.engine.barrier import BarrierCoordinator, BarrierPhase
+from crosslab.engine.barrier import BarrierCoordinator
 from crosslab.engine.probe_validation import validate_instrumentation_payload
 from crosslab.engine.session import InvestigationSession
 from crosslab.protocol.actions import ActionType, AgentRole

@@ -5,7 +5,6 @@ Per-session harness thread ID manifest for cross-harness continuity.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Optional
 

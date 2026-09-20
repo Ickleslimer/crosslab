@@ -6,11 +6,7 @@ from crosslab.engine.analyzers import TemporalAnalyzer
 from crosslab.engine.session import InvestigationSession
 from crosslab.protocol.actions import EvidenceRelation, EvidenceType, HypothesisStatus
 from crosslab.protocol.models import (
-    EvidenceItem,
-    Hypothesis,
-    Observation,
     RunRecord,
-    get_monotonic_ns,
 )
 
 

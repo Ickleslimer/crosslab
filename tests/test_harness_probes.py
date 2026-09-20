@@ -1,7 +1,6 @@
 """Tests for Tier A harness config probes."""
 
 import json
-import os
 from pathlib import Path
 
 import pytest

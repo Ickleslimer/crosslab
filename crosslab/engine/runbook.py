@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from crosslab.protocol.actions import ActionType
-from crosslab.protocol.models import MessageEnvelope, utc_now_iso
+from crosslab.protocol.models import MessageEnvelope
 
 if TYPE_CHECKING:
     from crosslab.engine.session import InvestigationSession
@@ -99,7 +99,10 @@ class RunbookCoordinator:
     @staticmethod
     def _is_unpause_repro(msg: MessageEnvelope) -> bool:
         text = (msg.natural_language or "").upper()
-        return "UNPAUSE" in text and ("STEP" in text or re.search(r"\(\d+\)", msg.natural_language or ""))
+        return bool(
+            "UNPAUSE" in text
+            and ("STEP" in text or re.search(r"\(\d+\)", msg.natural_language or ""))
+        )
 
     @staticmethod
     def _parse_chat_repro(msg: MessageEnvelope) -> Optional[Dict[str, Any]]:

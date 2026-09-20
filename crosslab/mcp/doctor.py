@@ -4,11 +4,10 @@ CrossLab environment diagnostics.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
-from crosslab.transport.topology import is_loopback_url
 from crosslab.mcp.server import CrossLabMCPServer
 
 

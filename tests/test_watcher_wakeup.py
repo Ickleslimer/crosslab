@@ -3,7 +3,6 @@ Tests for harness wakeup backends and watcher integration.
 """
 
 import json
-import os
 from unittest.mock import AsyncMock, patch
 
 import pytest

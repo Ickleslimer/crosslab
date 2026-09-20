@@ -39,3 +39,31 @@ dev = [
     "frida-tools>=14.10.4",
     "pyinstaller>=6.0.0",
 ]
+
+[tool.ruff]
+# Explicit linter config: an unconfigured ruff (0.16.x) falls back to a broad
+# ruleset (~730 findings on this tree), so CI must not depend on whatever
+# version happens to be installed. Widening this set is a deliberate change.
+target-version = "py310"
+
+[tool.ruff.lint]
+# The high-signal core: pyflakes findings plus the error-class pycodestyle
+# rules. Mostly unused imports, but F-series also catches real bugs (unused
+# variables, undefined names, f-strings with no placeholders).
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# TEMPORARY WAIVER (2026-09-20): these six findings (five unused imports, one
+# unused local) predate the lint gate and live inside uncommitted local work
+# in this file, so the agent that added the gate could not fix them without
+# committing someone else's in-flight changes. Remove this table (and run
+# `ruff check --fix` on the file) once that work is committed.
+"crosslab/transport/node.py" = ["F401", "F841"]
+
+[tool.mypy]
+# The pydantic plugin synthesizes model __init__ signatures, which is both
+# more accurate than mypy's guess at BaseModel and avoids false positives
+# (notably AgentPeer(role="host") in tests). Requires pydantic installed in
+# the environment mypy runs in, which the CI step ensures via --with-editable.
+plugins = ["pydantic.mypy"]
+files = ["crosslab", "tests", "scripts"]

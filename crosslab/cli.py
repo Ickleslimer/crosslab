@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import sys
-from typing import Optional
 
 # Ensure standard output can handle utf-8 on Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -38,7 +37,6 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 def cmd_mcp_install(args: argparse.Namespace) -> None:
     from crosslab.mcp.install import (
-        SUPPORTED_HARNESSES,
         get_install_path,
         merge_config,
         post_install_hint,
@@ -170,7 +168,7 @@ def cmd_node(args: argparse.Namespace) -> None:
         initial_peer_url=args.peer,
         transcript_dir=transcript_dir,
     )
-    console.print(f"[bold green]Starting CrossLab A2A Node[/bold green]")
+    console.print("[bold green]Starting CrossLab A2A Node[/bold green]")
     console.print(f"  Agent ID:   [cyan]{node.agent_id}[/cyan]")
     console.print(f"  Role:       [yellow]{node.role.value}[/yellow]")
     console.print(f"  Endpoint:   [blue]{node.endpoint_url}[/blue]")

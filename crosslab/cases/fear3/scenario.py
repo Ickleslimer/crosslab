@@ -4,10 +4,8 @@ Demonstrates two independent coding agents collaborating across separate machine
 """
 
 import asyncio
-import json
 import logging
 import sys
-from typing import Optional
 
 # Ensure standard output can handle utf-8 on Windows
 if hasattr(sys.stdout, "reconfigure"):
@@ -17,11 +15,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from crosslab.agent.client import CrossLabClient
 from crosslab.cases.fear3.client_harness import Fear3ClientHarness
 from crosslab.cases.fear3.host_harness import Fear3HostHarness
 from crosslab.engine.session import InvestigationSession
-from crosslab.protocol.actions import ActionType, AgentRole, HypothesisStatus, RunOutcome
+from crosslab.protocol.actions import ActionType, RunOutcome
 from crosslab.protocol.models import MessageEnvelope, RunRecord
 
 logger = logging.getLogger("crosslab.scenario")
@@ -106,6 +103,7 @@ async def run_fear3_investigation_demo(interactive: bool = False) -> Investigati
 
     # Client accepts experiment
     accepted_exp = session.accept_experiment(exp.id)
+    assert accepted_exp is not None, "client failed to accept the experiment"
     console.print("  [green][OK][/green] Client Agent independently reviewed and [green]ACCEPTED[/green] experiment proposal.\n")
 
     # 5. Local Instrumentation Execution (Zero-Trust boundary)

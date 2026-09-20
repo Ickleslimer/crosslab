@@ -3,7 +3,6 @@ Multi-Machine Correlation Engine for CrossLab.
 Discovers empirical facts across distributed timelines and delegates to pluggable analyzers.
 """
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from crosslab.engine.analyzers import (
@@ -127,7 +126,7 @@ class CorrelationEngine:
         Calculates differential comparison between two test runs.
         What changed between Run A and Run B?
         """
-        diff = {
+        diff: Dict[str, Any] = {
             "run_a_id": run_a.run_id,
             "run_b_id": run_b.run_id,
             "build_changed": run_a.build != run_b.build,

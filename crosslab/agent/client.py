@@ -8,10 +8,8 @@ import httpx
 
 from crosslab.protocol.actions import (
     ActionType,
-    AgentRole,
     EvidenceRelation,
     EvidenceType,
-    HypothesisStatus,
 )
 from crosslab.protocol.models import (
     AgentCard,
@@ -20,7 +18,6 @@ from crosslab.protocol.models import (
     EvidenceItem,
     Experiment,
     Hypothesis,
-    InstrumentationRequest,
     MessageEnvelope,
     Observation,
     RunRecord,

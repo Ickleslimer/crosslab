@@ -8,12 +8,13 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+
 import httpx
+from typing import Any, Dict, List, Optional
 
 from crosslab.agent.client import CrossLabClient
 from crosslab.engine.session import InvestigationSession
-from crosslab.protocol.actions import AgentRole, EvidenceRelation, EvidenceType, RunOutcome
+from crosslab.protocol.actions import EvidenceRelation, EvidenceType, RunOutcome
 from crosslab.protocol.models import RunRecord
 
 
@@ -583,15 +584,15 @@ class CrossLabMCPServer:
             return {"status": "ok", "assessment": ass.model_dump() if ass else None}
 
         elif name == "crosslab_challenge_hypothesis":
-            hyp = session.challenge_hypothesis(
+            challenged = session.challenge_hypothesis(
                 hypothesis_id=arguments["hypothesis_id"],
                 challenger=arguments["challenger"],
                 reason=arguments["reason"],
                 counter_evidence=arguments.get("counter_evidence"),
             )
-            if not hyp:
+            if not challenged:
                 return {"error": f"Hypothesis {arguments['hypothesis_id']} not found"}
-            return {"status": "ok", "hypothesis": hyp.model_dump()}
+            return {"status": "ok", "hypothesis": challenged.model_dump()}
 
         elif name == "crosslab_propose_experiment":
             exp = session.propose_experiment(
@@ -623,10 +624,10 @@ class CrossLabMCPServer:
             return {"status": "ok", "run": saved.model_dump()}
 
         elif name == "crosslab_correlate_run":
-            run = session.get_run(arguments["run_id"])
-            if not run:
+            target_run = session.get_run(arguments["run_id"])
+            if not target_run:
                 return {"error": f"Run {arguments['run_id']} not found"}
-            corr = session.correlator.correlate_run(run)
+            corr = session.correlator.correlate_run(target_run)
             return {"status": "ok", "correlation": corr.model_dump()}
 
         elif name == "crosslab_query_investigation":
@@ -637,8 +638,8 @@ class CrossLabMCPServer:
                 hyps = session.get_unresolved_hypotheses()
                 return {"unresolved_hypotheses": [h.model_dump() for h in hyps]}
             elif qtype == "latest_reproduced":
-                run = session.get_latest_reproducing_run()
-                return {"latest_reproduced_run": run.model_dump() if run else None}
+                latest = session.get_latest_reproducing_run()
+                return {"latest_reproduced_run": latest.model_dump() if latest else None}
             elif qtype == "latest_run":
                 runs = session.get_runs()
                 return {"latest_run": runs[-1].model_dump() if runs else None}
@@ -758,14 +759,23 @@ class CrossLabMCPServer:
                     content_text = json.dumps(self.execute_tool("crosslab_query_investigation", {"query": "latest_run"}), indent=2)
                 elif uri == "crosslab://ledger/messages":
                     if self.client:
+                        # CrossLabClient's helpers are all async and this
+                        # stdio handler is sync, so read the endpoint directly
+                        # (previously `self.client._get`, which never existed —
+                        # the AttributeError was swallowed by the except below).
                         try:
-                            res = self.client._get("/v1/a2a/messages?limit=20")
+                            res = httpx.get(
+                                f"{self.client.base_url}/v1/a2a/messages?limit=20",
+                                timeout=5.0,
+                            ).json()
                             content_text = json.dumps(res, indent=2)
                         except Exception:
                             content_text = "[]"
-                    else:
-                        msgs = [m.model_dump() for m in self.local_session.get_messages(limit=20)]
+                    elif self.session is not None:
+                        msgs = [m.model_dump() for m in self.session.get_messages(limit=20)]
                         content_text = json.dumps(msgs, indent=2)
+                    else:
+                        content_text = "[]"
                 else:
                     return json.dumps({
                         "jsonrpc": "2.0",

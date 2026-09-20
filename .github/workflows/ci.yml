@@ -1,9 +1,11 @@
 name: CI
 
 # The same two gates run here that the local pipeline trusts:
-#   * the Python gate is byte-for-byte the command scripts/crosslab_sync.py
-#     runs in its ephemeral env (isolated uv env built from pyproject.toml,
-#     pytest + pytest-asyncio), so green locally means green here.
+#   * the Python gate runs ruff and mypy against pyproject.toml's explicit
+#     [tool.ruff]/[tool.mypy] config, then the exact pytest command
+#     scripts/crosslab_sync.py runs in its ephemeral env (isolated env from
+#     pyproject.toml, pytest + pytest-asyncio) — so the test half of the gate
+#     is green locally iff it is green here.
 #   * the desktop gate is the SvelteKit app: npm ci -> vitest -> vite build.
 # `npm run check` (svelte-check) is enforced as part of the desktop job:
 # the three pre-existing type errors were fixed in the commit that added
@@ -27,13 +29,23 @@ permissions:
 
 jobs:
   python-gate:
-    name: Python gate (ephemeral uv env)
+    name: Python gate (ruff + mypy + pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.12"
+      # Tool versions are pinned exactly: a new ruff release can add rules and
+      # a new mypy can add checks, and this gate must not change underneath a
+      # PR that touched nothing. Bumping is a deliberate edit here (Dependabot
+      # cannot see `uv run --with` args, so it cannot do it for us).
+      - name: Lint (ruff)
+        run: uv run --isolated --with ruff==0.16.8 -- ruff check .
+      - name: Type check (mypy)
+        run: >-
+          uv run --isolated --with-editable . --with pytest --with pytest-asyncio --
+          --with mypy==2.3.1 -- mypy
       - name: Tests (clean ephemeral env from pyproject)
         run: >-
           uv run --isolated --with-editable . --with pytest --with pytest-asyncio --

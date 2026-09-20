@@ -9,17 +9,12 @@ import json
 import os
 from pathlib import Path
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
-from crosslab.protocol.actions import ActionType, AgentRole, RunOutcome
+from crosslab.protocol.actions import ActionType
 from crosslab.protocol.models import (
-    AgentPeer,
-    ArtifactPayload,
-    EvidenceItem,
-    Experiment,
     Hypothesis,
     MessageEnvelope,
-    Observation,
     RunRecord,
 )
 
@@ -83,7 +78,7 @@ class TranscriptRecorder:
             "",
             f"> **Session Name:** {name}  ",
             f"> **Started At:** `{ts}`  ",
-            f"> **Transcript Format:** Live Streaming Markdown Backup  ",
+            "> **Transcript Format:** Live Streaming Markdown Backup  ",
             "",
             "---",
             "",
@@ -207,7 +202,6 @@ class TranscriptRecorder:
         peers = storage.get_peers(session_id=session_id)
         messages = storage.get_messages(session_id=session_id, limit=None)
         hypotheses = storage.get_hypotheses(session_id=session_id)
-        experiments = storage.get_experiments(session_id=session_id)
         runs = storage.get_runs(session_id=session_id)
 
         md = []

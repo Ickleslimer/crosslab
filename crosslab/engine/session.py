@@ -20,7 +20,6 @@ from crosslab.protocol.models import (
     AgentAssessment,
     AgentPeer,
     ArtifactPayload,
-    CorrelationResult,
     EvidenceItem,
     Experiment,
     Hypothesis,

@@ -6,25 +6,19 @@ observation submission, clock offset calculation, and correlation across the wir
 """
 
 import asyncio
-from pathlib import Path
 from typing import Any
 import pytest
 import uvicorn
 
 from crosslab.agent.client import CrossLabClient
 from crosslab.protocol.actions import (
-    ActionType,
     AgentRole,
     EvidenceRelation,
-    EvidenceType,
-    ExperimentStatus,
     HypothesisStatus,
     RunOutcome,
 )
 from crosslab.protocol.models import (
-    Observation,
     RunRecord,
-    SyncRunSignal,
     get_monotonic_ns,
 )
 from crosslab.transport.node import A2ANode

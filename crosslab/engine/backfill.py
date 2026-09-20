@@ -1,7 +1,5 @@
-﻿import sqlite3
-import json
-from crosslab.engine.session import InvestigationSession
-from crosslab.protocol.models import RunRecord, Observation, utc_now_iso
+﻿from crosslab.engine.session import InvestigationSession
+from crosslab.protocol.models import RunRecord, utc_now_iso
 from crosslab.protocol.actions import RunOutcome
 
 def backfill(db_path='D:/crosslab/crosslab_fear3-debug.db', session_id='fear3-debug'):

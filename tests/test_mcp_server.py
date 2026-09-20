@@ -27,7 +27,9 @@ def test_mcp_json_rpc_tools_list() -> None:
 
     # 1. Initialize
     init_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}})
-    init_resp = json.loads(server.handle_json_rpc(init_req))
+    init_raw = server.handle_json_rpc(init_req)
+    assert init_raw is not None
+    init_resp = json.loads(init_raw)
     assert init_resp["id"] == 1
     assert init_resp["result"]["protocolVersion"] == "2024-11-05"
 
@@ -37,12 +39,15 @@ def test_mcp_json_rpc_tools_list() -> None:
 
     # 3. Ping
     ping_req = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"})
-    ping_resp = json.loads(server.handle_json_rpc(ping_req))
+    ping_raw = server.handle_json_rpc(ping_req)
+    assert ping_raw is not None
+    ping_resp = json.loads(ping_raw)
     assert ping_resp["id"] == 2
 
     # 4. Tools list
     req = json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
     resp_str = server.handle_json_rpc(req)
+    assert resp_str is not None
     resp = json.loads(resp_str)
     assert resp["id"] == 3
     assert "tools" in resp["result"]

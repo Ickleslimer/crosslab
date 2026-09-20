@@ -71,6 +71,8 @@ async def test_doctor_against_node(tmp_path):
     )
     transport = ASGITransport(app=node.app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/health")
+        assert health.status_code == 200
         config = render_config("codex")
         parsed = json.loads(json.dumps(config))
         assert "mcpServers" in parsed

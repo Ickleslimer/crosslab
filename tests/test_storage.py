@@ -3,13 +3,11 @@ Tests for SQLite Storage Engine.
 """
 
 from crosslab.engine.storage import Storage
-from crosslab.protocol.actions import AgentRole, ExperimentStatus, HypothesisStatus, RunOutcome
+from crosslab.protocol.actions import AgentRole, RunOutcome
 from crosslab.protocol.models import (
     AgentPeer,
-    ArtifactPayload,
     Experiment,
     Hypothesis,
-    InstrumentationRequest,
     MessageEnvelope,
     Observation,
     RunRecord,

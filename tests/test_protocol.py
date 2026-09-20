@@ -4,25 +4,14 @@ Tests for CrossLab Protocol Models and Actions.
 
 from crosslab.protocol.actions import (
     ActionType,
-    AgentRole,
     ExperimentStatus,
     HypothesisStatus,
-    RunOutcome,
 )
 from crosslab.protocol.models import (
-    AgentPeer,
     ArtifactPayload,
-    CorrelationResult,
-    Discrepancy,
     Experiment,
-    HandshakeRequest,
-    HandshakeResponse,
     Hypothesis,
-    InstrumentationRequest,
     MessageEnvelope,
-    Observation,
-    RunRecord,
-    SyncRunSignal,
 )
 
 
