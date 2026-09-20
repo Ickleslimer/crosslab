@@ -22,7 +22,12 @@ diagnosed. What still needs automation, this script does:
   3. registry— point every harness entry at the shim (create when missing),
                preserving other servers, BOM, and CRLF style; one-shot .bak
                on modification.
-  4. hooks   — self-heal core.hooksPath=hooks so a fresh clone keeps
+  4. probe   — spawn the entry AS WRITTEN in the live registry file and
+               run a real MCP handshake (initialize + tools/list). The
+               check whose absence shipped a bare `crosslab`: the shim
+               answered --help, so shim_alive() passed, while every harness
+               spawn printed usage and exited ("Connection closed").
+  5. hooks   — self-heal core.hooksPath=hooks so a fresh clone keeps
                auto-sync (git never clones config; the hook itself IS
                tracked in hooks/post-commit).
 
@@ -60,6 +65,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DIST = "crosslab"
 SHIM = Path.home() / ".local" / "bin" / ("crosslab.exe" if os.name == "nt" else "crosslab")
+# Launch contract, mirroring crosslab's own installer templates
+# (crosslab/mcp/install.py): the shim MUST be given the `mcp` subcommand —
+# bare `crosslab` prints usage and exits, which harnesses surface as
+# "Connection closed. Failed to start MCP server". The node URL is explicit
+# so the entry is self-describing (same default as the installer).
+SHIM_ARGS = ["mcp", "--node-url", "http://127.0.0.1:8765"]
 
 # Harnesses to keep on the shim launch form. `create`: write the file when
 # missing (fresh-machine case); otherwise skip with a note.
@@ -176,7 +187,7 @@ def refresh_env(dry: bool) -> None:
 
 def _desired_entry() -> dict:
     # Deliberately env-free: agent identity self-manages (see module docstring).
-    return {"command": str(SHIM), "args": []}
+    return {"command": str(SHIM), "args": list(SHIM_ARGS)}
 
 
 def _read_json(path: Path) -> tuple[dict, bool, bool]:
@@ -258,7 +269,7 @@ def sync_codex_toml(name: str, spec: dict, dry: bool) -> None:
 
     header = f"[mcp_servers.{ENTRY_NAME}]"
     cmd_line = f"command = {_toml_str(str(SHIM))}"
-    args_line = "args = []"
+    args_line = f"args = {json.dumps(SHIM_ARGS)}"  # TOML inline array
     desired_block = header + nl + cmd_line + nl + args_line + nl
 
     if header in text:
@@ -303,6 +314,91 @@ def sync_codex_toml(name: str, spec: dict, dry: bool) -> None:
     path.write_bytes(new_text.encode("utf-8-sig" if had_bom else "utf-8"))
     print(f"  [ok] {'appended' if header not in text else 'updated'} "
           f"{header} (everything else byte-identical)")
+
+
+# ─── 4. launch probe ─────────────────────────────────────────────────────────
+
+
+def _probe_fail(proc: subprocess.Popen, msg: str) -> None:
+    """Kill the probe child, salvage its stderr, and abort the gate."""
+    try:
+        proc.kill()
+        proc.wait(timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        err = (proc.stderr.read() or "").strip()
+    except (OSError, ValueError):
+        err = ""
+    die(msg + (f" | stderr tail: {err[-500:]}" if err else ""))
+
+
+def probe_registry_entry() -> None:
+    """Spawn the crosslab entry EXACTLY as a harness reads it and handshake.
+
+    Reads command+args back out of the live Freebuff registry (not the
+    intended ones), so the file itself is the contract under test, then runs
+    initialize + tools/list over stdio. Fail-closed: a dead launch contract
+    aborts the sync instead of surfacing later as "Connection closed".
+    """
+    step("launch probe: spawning the written registry entry over stdio")
+    data, _bom, _crlf = _read_json(SERVERS["freebuff"]["path"])
+    entry = (data.get("mcpServers") or {}).get(ENTRY_NAME) or {}
+    cmd = entry.get("command")
+    argv = list(entry.get("args") or [])
+    if not cmd:
+        die("probe: freebuff registry has no crosslab entry")
+    print("  $ " + " ".join([cmd, *argv]))
+    env = dict(os.environ)
+    env.update(entry.get("env") or {})
+    proc = subprocess.Popen(
+        [cmd, *argv],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", env=env,
+    )
+
+    def send(obj: dict) -> None:
+        try:
+            proc.stdin.write(json.dumps(obj) + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            _probe_fail(proc, "probe: server closed stdin before the handshake")
+
+    def await_id(want: int, deadline_s: float = 90.0) -> dict:
+        end = time.time() + deadline_s
+        while time.time() < end:
+            line = proc.stdout.readline()
+            if not line:
+                _probe_fail(proc, f"probe: server exited before replying to id={want}")
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # stray non-protocol line; only JSON replies count
+            if msg.get("id") == want:
+                return msg
+        _probe_fail(proc, f"probe: timed out waiting for id={want}")
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "crosslab_sync", "version": "0"}}})
+        init = await_id(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        listing = await_id(2)
+    finally:
+        try:
+            proc.kill()
+            proc.wait(timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if "error" in init:
+        die(f"probe: initialize errored: {init['error']}")
+    tools = (listing.get("result") or {}).get("tools") or []
+    if not tools:
+        die("probe: handshake completed but tools/list returned no tools")
+    server_name = ((init.get("result") or {}).get("serverInfo") or {}).get("name", "?")
+    print(f"  [ok] {server_name} answered; {len(tools)} tools visible over stdio")
 
 
 # Single-flight guard for the whole pipeline — the post-commit hook runs the
@@ -387,6 +483,7 @@ def main() -> None:
                 continue
             sync_codex_toml(name, spec, args.dry_run)
         if not args.dry_run:
+            probe_registry_entry()
             ensure_hook_config()
     finally:
         shutil.rmtree(LOCK_DIR, ignore_errors=True)
