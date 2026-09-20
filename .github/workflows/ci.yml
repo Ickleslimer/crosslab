@@ -8,6 +8,10 @@ name: CI
 # `npm run check` (svelte-check) is deliberately NOT included yet — the
 # committed tree has 3 pre-existing type errors, and a knowingly-red job
 # trains people to ignore CI. Add it once the errors are fixed.
+#
+# Actions run on node24: checkout/setup-node publish moving major tags (v7),
+# but setup-uv stopped publishing major tags after v7 — v8+ exist only as
+# exact versions, hence the pinned v10.1.0 (bump it explicitly when updating).
 
 on:
   push:
@@ -25,8 +29,8 @@ jobs:
     name: Python gate (ephemeral uv env)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.12"
       - name: Tests (clean ephemeral env from pyproject)
@@ -41,8 +45,8 @@ jobs:
       run:
         working-directory: desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
