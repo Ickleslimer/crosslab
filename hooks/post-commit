@@ -1,0 +1,60 @@
+#!/bin/sh
+# Auto-propagation: run scripts/crosslab_sync.py after EVERY commit in this repo.
+#
+# Why: source edits are live in the shim env at next server start, but
+# dependency/entry-point changes need a reinstall and harness registries
+# need re-syncing — nobody should have to remember that. The sync is
+# test-gated (clean ephemeral env) and makes no commits of its own, so this
+# hook cannot recurse.
+#
+# Behavior: the sync runs DETACHED so commits stay instant — output goes to
+# .git/crosslab-sync.log (last run only), and a failure is echoed to the
+# terminal (/dev/tty) once detected. A lock prevents two rapid commits from
+# racing their syncs; the skipped commit's state is covered by the run in
+# flight (it reads the tree as of whenever it starts).
+#
+# Notes: fires on amend/rebase internal commits too — harmless, the sync is
+# idempotent. Always exits 0: a sync failure must never block a commit.
+
+REPO="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+LOG="$REPO/.git/crosslab-sync.log"
+LOCK="$REPO/.git/crosslab-sync.lock"
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null)"
+
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "[$(date '+%H:%M:%S')] sync already running — skipped for $COMMIT" >>"$LOG" 2>/dev/null
+  exit 0
+fi
+
+if command -v python >/dev/null 2>&1; then
+  PY=python
+elif command -v py >/dev/null 2>&1; then
+  PY=py
+else
+  rmdir "$LOCK" 2>/dev/null
+  echo "[$(date '+%H:%M:%S')] no python on PATH — sync skipped for $COMMIT" >>"$LOG" 2>/dev/null
+  exit 0
+fi
+
+{
+  echo "=== $(date '+%Y-%m-%d %H:%M:%S') — commit $COMMIT ==="
+  "$PY" "$REPO/scripts/crosslab_sync.py"
+  rmdir "$LOCK" 2>/dev/null
+} >"$LOG" 2>&1 &
+
+# Failure watcher: poll the log for ~2 minutes; surface FATAL on the terminal
+# without touching git's own output. Silent on success by design.
+(
+  i=0
+  while [ $i -lt 60 ]; do
+    sleep 2
+    i=$((i + 1))
+    if grep -q "FATAL" "$LOG" 2>/dev/null; then
+      echo "crosslab-sync FAILED after commit $COMMIT — see $LOG" >/dev/tty 2>/dev/null
+      exit 0
+    fi
+    grep -q "\[sync\] done" "$LOG" 2>/dev/null && exit 0
+  done
+) >/dev/null 2>&1 &
+
+exit 0
