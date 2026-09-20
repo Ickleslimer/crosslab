@@ -1,0 +1,54 @@
+name: CI
+
+# The same two gates run here that the local pipeline trusts:
+#   * the Python gate is byte-for-byte the command scripts/crosslab_sync.py
+#     runs in its ephemeral env (isolated uv env built from pyproject.toml,
+#     pytest + pytest-asyncio), so green locally means green here.
+#   * the desktop gate is the SvelteKit app: npm ci -> vitest -> vite build.
+# `npm run check` (svelte-check) is deliberately NOT included yet — the
+# committed tree has 3 pre-existing type errors, and a knowingly-red job
+# trains people to ignore CI. Add it once the errors are fixed.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python-gate:
+    name: Python gate (ephemeral uv env)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Tests (clean ephemeral env from pyproject)
+        run: >-
+          uv run --isolated --with-editable . --with pytest --with pytest-asyncio --
+          python -m pytest tests/ -q
+
+  desktop:
+    name: Desktop (npm ci + vitest + vite build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Production build (adapter-static)
+        run: npm run build
