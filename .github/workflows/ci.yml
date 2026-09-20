@@ -44,7 +44,7 @@ jobs:
         run: uv run --isolated --with ruff==0.16.8 -- ruff check .
       - name: Type check (mypy)
         run: >-
-          uv run --isolated --with-editable . --with pytest --with pytest-asyncio --
+          uv run --isolated --with-editable . --with pytest --with pytest-asyncio
           --with mypy==2.3.1 -- mypy
       - name: Tests (clean ephemeral env from pyproject)
         run: >-
