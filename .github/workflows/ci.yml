@@ -5,9 +5,9 @@ name: CI
 #     runs in its ephemeral env (isolated uv env built from pyproject.toml,
 #     pytest + pytest-asyncio), so green locally means green here.
 #   * the desktop gate is the SvelteKit app: npm ci -> vitest -> vite build.
-# `npm run check` (svelte-check) is deliberately NOT included yet — the
-# committed tree has 3 pre-existing type errors, and a knowingly-red job
-# trains people to ignore CI. Add it once the errors are fixed.
+# `npm run check` (svelte-check) is enforced as part of the desktop job:
+# the three pre-existing type errors were fixed in the commit that added
+# the step, and CI was kept honest (green before the job was enabled).
 #
 # Actions run on node24: checkout/setup-node publish moving major tags (v7),
 # but setup-uv stopped publishing major tags after v7 — v8+ exist only as
@@ -39,7 +39,7 @@ jobs:
           python -m pytest tests/ -q
 
   desktop:
-    name: Desktop (npm ci + vitest + vite build)
+    name: Desktop (svelte-check + vitest + vite build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -52,6 +52,8 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: npm ci
+      - name: Type check (svelte-check)
+        run: npm run check
       - name: Unit tests
         run: npm test
       - name: Production build (adapter-static)

@@ -2,6 +2,10 @@ import { Store } from '@tauri-apps/plugin-store';
 import type { SessionConfig } from '$lib/api/client';
 import type { SessionManifestEntry } from '$lib/tauri';
 
+// Re-exported so consumers can take the manifest entry type from the module
+// that owns manifest handling, instead of reaching into tauri.ts directly.
+export type { SessionManifestEntry };
+
 const STORE_FILE = 'session.json';
 const MANIFEST_KEY = 'manifest';
 

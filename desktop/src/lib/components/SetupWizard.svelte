@@ -6,7 +6,10 @@
   import { formatRelativeTime, generateJoinCode, loadSessionManifest, rememberSession, type SessionManifestEntry } from '$lib/sessions';
   import { nodeHealth, nodePort, sessionConfig } from '$lib/stores/session';
 
-  let role: AgentRole = $state('host');
+  // Type argument (not just an annotation) keeps the declared type on flow
+  // analysis: with `$state('host')` TS narrows `role` to the 'host' literal,
+  // which made the `role === 'client'` checks below look unreachable.
+  let role = $state<AgentRole>('host');
   let joinCode = $state('fear3-debug');
   let port = $state(8765);
   let peer = $state('http://127.0.0.1:8765');

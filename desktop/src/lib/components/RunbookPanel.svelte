@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { RunbookItem } from '$lib/api/client';
+  import type { AgentRole, RunbookItem } from '$lib/api/client';
 
   let {
     pending = [],
@@ -7,7 +7,9 @@
     onSignal
   }: {
     pending?: RunbookItem[];
-    role?: 'host' | 'client';
+    // Full role union so session configs pass through unmodified; the panel
+    // currently renders the same runbook for every role.
+    role?: AgentRole;
     onSignal?: (signal: string, detail: string, runId?: number) => void | Promise<void>;
   } = $props();
 </script>
