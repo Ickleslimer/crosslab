@@ -1,0 +1,26 @@
+version: 2
+
+# Action versions are maintained here rather than by hand. That is what makes
+# the exact pin in .github/workflows/ci.yml safe: astral-sh/setup-uv stopped
+# publishing moving major tags after v7 (v8+ exist only as exact versions),
+# so without an updater that pin would silently rot. Dependabot PRs run this
+# repo's own CI workflow, so a bad bump fails the gate before it can merge.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      # Minor/patch bumps land as a single PR to keep the noise down; major
+      # bumps stay separate so a breaking action change (a new checkout or
+      # setup-node major) is reviewed on its own.
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
