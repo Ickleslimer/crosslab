@@ -186,13 +186,23 @@ class CrossLabMCPServer:
             },
             {
                 "name": "crosslab_get_transcript",
-                "description": "Fetch transcript markdown, or resolve a linked harness thread ID when harness is set.",
+                "description": (
+                    "Fetch THIS CrossLab investigation session's own transcript (peer messages, hypotheses, "
+                    "experiments recorded by CrossLab). NOT a cross-harness transcript reader: to read "
+                    "conversations stored by Antigravity/Codex/OpenCode/Cursor/etc., use the CodeTalker MCP "
+                    "server (codetalk_search / codetalk_read). With harness set, this returns only the stored "
+                    "thread ID - no content."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "harness": {
                             "type": "string",
-                            "description": "Optional harness key (antigravity, codex, opencode, cursor) to return linked thread ID",
+                            "description": (
+                                "Optional harness key; returns only the stored linked thread ID for that harness "
+                                "(no content). To actually READ that harness's transcript, pass this ID to the "
+                                "CodeTalker MCP server (codetalk_read)."
+                            ),
                         },
                     },
                 },
@@ -251,12 +261,19 @@ class CrossLabMCPServer:
             },
             {
                 "name": "crosslab_get_harness_links",
-                "description": "Get linked external harness thread/session IDs for this investigation.",
+                "description": (
+                    "Get external harness thread/session IDs recorded for this CrossLab investigation "
+                    "(ID references only, no transcript content). To read those harness threads, pass "
+                    "the IDs to the CodeTalker MCP server (codetalk_read)."
+                ),
                 "inputSchema": {"type": "object", "properties": {}},
             },
             {
                 "name": "crosslab_set_harness_link",
-                "description": "Link an external harness thread ID to this CrossLab session.",
+                "description": (
+                    "Record an external harness thread ID for reference in this CrossLab session. "
+                    "Does NOT fetch or sync transcript content - CodeTalker reads the thread itself."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -475,7 +492,11 @@ class CrossLabMCPServer:
                     "status": "ok",
                     "harness": harness,
                     "linked_thread_id": thread_id,
-                    "note": "Use this ID with CodeTalker or the harness UI; CrossLab does not fetch external transcripts.",
+                    "note": (
+                        "This is only an ID reference, not transcript content. To READ this harness thread, "
+                        "call the CodeTalker MCP server: codetalk_read(harness='<harness>', "
+                        "session_id='<linked_thread_id>'). CrossLab does not fetch external transcripts."
+                    ),
                 }
             text = await client.get_transcript()
             return {"status": "ok", "transcript": text}
@@ -702,7 +723,18 @@ class CrossLabMCPServer:
                         "serverInfo": {
                             "name": "crosslab-mcp-server",
                             "version": "0.3.0"
-                        }
+                        },
+                        "instructions": (
+                            "CrossLab is an agent-to-agent (A2A) collaboration server: it coordinates "
+                            "MULTIPLE agents working ONE shared investigation (peer chat, hypotheses, "
+                            "evidence, run records, barrier-synced experiments). It is NOT a transcript "
+                            "reader for other coding harnesses. To read or search past conversations from "
+                            "Antigravity, Codex, OpenCode, Cursor, Freebuff or similar, use the CodeTalker "
+                            "MCP server (codetalk_search, codetalk_list, codetalk_read). Within CrossLab, "
+                            "crosslab_get_transcript fetches only CrossLab's own investigation transcript, "
+                            "and crosslab_get_harness_links / crosslab_set_harness_link only store thread "
+                            "ID references - pass those IDs to CodeTalker to read the actual content."
+                        )
                     }
                 })
             elif method in ("notifications/initialized", "initialized"):

@@ -243,7 +243,7 @@ Link external harness session IDs to a CrossLab investigation via the desktop Se
 - `crosslab_correlate_run`: Run multi-machine cross-log correlation to find sequence gaps and timing deltas.
 - `crosslab_query_investigation`: Query shared investigation state (unresolved hypotheses, latest reproduced run, diffs).
 - `crosslab_share_patch`: Share unified patches or diagnostic scripts across the network.
-- `crosslab_get_transcript`: Fetch the full human-readable Markdown investigation transcript.
+- `crosslab_get_transcript`: Fetch CrossLab's **own** investigation transcript (peer messages, hypotheses, runs). Not a cross-harness reader — use the CodeTalker MCP server (`codetalk_search` / `codetalk_read`) to read Antigravity/Codex/OpenCode/Cursor conversations.
 - `crosslab_wait_for_message`: Block until an inbound peer message arrives (replaces manual poll timers).
 - `crosslab_get_run_state`: Query barrier coordination state for a run (phase, ready flags, start_authorized).
 - `crosslab_send_sync_signal`: Send structured ready/start/abort sync signals.
